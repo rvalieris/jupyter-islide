@@ -1,0 +1,45 @@
+{
+  "name": "jupyter-islide",
+  "version": "0.1.0",
+  "description": "JupyterLab extension providing the canvas view (islide.SlideView) for the islide whole-slide viewer",
+  "license": "MIT",
+  "main": "index.js",
+  "type": "module",
+  "jupyterlab": {
+    "extension": "labextension.js",
+    "outputDir": "labextension",
+    "sharedPackages": {
+      "@jupyter-widgets/base": {
+        "bundled": false,
+        "singleton": true
+      }
+    }
+  },
+  "files": [
+    "index.js",
+    "model.js",
+    "view.js",
+    "tilemath.js",
+    "compositor.js",
+    "defaults.js",
+    "labextension.js",
+    "style/*.css"
+  ],
+  "dependencies": {
+    "@jupyter-widgets/base": "^6.0.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "build": "jupyter labextension build ."
+  },
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "widgets",
+    "whole-slide",
+    "histopathology"
+  ]
+}

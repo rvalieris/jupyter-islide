@@ -1,0 +1,436 @@
+/**
+ * islide canvas view (M1).
+ *
+ * Owns: the DOM (canvas + minimap + toolbar), all mouse/keyboard input, the
+ * local pan/zoom transform (smooth between round-trips), and the canvas
+ * compositor. Python owns: the slide, tile planning/fetch/cache/encode.
+ *
+ * Data flow:
+ *   user input -> local transform (instant draw)
+ *              -> debounced `viewport` trait (Python plans + fetches tiles)
+ *   Python     -> `tiles` (data URLs) + `tile_geo` (level-space rects)
+ *              -> decoded image cache -> canvas
+ */
+import { DOMWidgetView } from '@jupyter-widgets/base';
+import * as math from './tilemath.js';
+import { drawScene } from './compositor.js';
+import './style/index.css';
+
+const SYNC_DEBOUNCE_MS = 120;
+const MAX_CACHED_IMAGES = 400;
+const MIN_ZOOM_PAD = 4; // min zoom = fit / 4 (matches the Python side)
+const MAX_ZOOM = 16;
+
+export class SlideView extends DOMWidgetView {
+  render() {
+    super.render();
+    this._transform = null;
+    this._images = new Map();
+    this._lastSentViewport = null;
+    this._syncTimer = null;
+    this._drawQueued = false;
+    this._dragging = null;
+
+    this._buildDom();
+    this._bindModel();
+    this._bindEvents();
+    this._resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => this._onResize())
+        : null;
+    this.displayed.then(() => {
+      this._onResize();
+      this._maybeSendInitialViewport();
+      this._requestDraw();
+    });
+  }
+
+  // ------------------------------------------------------------------ DOM
+  _buildDom() {
+    this.el.classList.add('islide-view');
+    this.el.innerHTML = `
+      <div class="islide-canvas-wrap">
+        <canvas class="islide-canvas"></canvas>
+        <div class="islide-minimap">
+          <img class="islide-minimap-img" alt="minimap"/>
+          <canvas class="islide-minimap-rect"></canvas>
+        </div>
+      </div>
+      <div class="islide-toolbar">
+        <button class="islide-btn" data-action="zoom-out">−</button>
+        <button class="islide-btn" data-action="zoom-in">+</button>
+        <button class="islide-btn" data-action="fit">fit</button>
+        <button class="islide-btn" data-action="1:1">1:1</button>
+        <span class="islide-readout"></span>
+        <span class="islide-status"></span>
+      </div>`;
+    this._canvas = this.el.querySelector('.islide-canvas');
+    this._minimapWrap = this.el.querySelector('.islide-minimap');
+    this._minimapImg = this.el.querySelector('.islide-minimap-img');
+    this._minimapRect = this.el.querySelector('.islide-minimap-rect');
+    this._readout = this.el.querySelector('.islide-readout');
+    this._status = this.el.querySelector('.islide-status');
+    if (this._resizeObserver) {
+      this._resizeObserver.observe(this._canvas);
+    }
+  }
+
+  // ------------------------------------------------------- model bindings
+  _bindModel() {
+    this.listenTo(this.model, 'change:viewport', this._onViewportChange);
+    this.listenTo(this.model, 'change:tiles', this._onTilesChange);
+    this.listenTo(this.model, 'change:meta', this._onMetaChange);
+    this.listenTo(this.model, 'change:slide_open', this._onSlideOpen);
+    this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
+    this.listenTo(this.model, 'change:status', this._onStatusChange);
+    this._onMetaChange();
+    this._onSlideOpen();
+    this._onMinimapChange();
+    this._onStatusChange();
+  }
+
+  _onViewportChange() {
+    const vp = this.model.get('viewport');
+    if (vp) {
+      // Apply Python's viewport (programmatic API / initial fit). Never
+      // re-send from here: interaction-only updates are the sole writers
+      // of the `viewport` trait from the JS side.
+      this._transform = math.viewportToTransform(vp);
+    }
+    this._requestDraw();
+  }
+
+  _onTilesChange() {
+    this._mergeTiles();
+    this._requestDraw();
+  }
+
+  _onMetaChange() {
+    this._maybeSendInitialViewport();
+  }
+
+  _onSlideOpen() {
+    this._maybeSendInitialViewport();
+  }
+
+  _onMinimapChange() {
+    const url = this.model.get('minimap_img');
+    if (url) {
+      this._minimapImg.src = url;
+    }
+    this._layoutMinimap();
+  }
+
+  _onStatusChange() {
+    this._status.textContent = this.model.get('status');
+  }
+
+  _mergeTiles() {
+    const tiles = this.model.get('tiles');
+    for (const [key, url] of Object.entries(tiles)) {
+      if (this._images.has(key)) continue;
+      const img = new Image();
+      img.onload = () => {
+        img._ready = true;
+        this._requestDraw();
+      };
+      img.src = url;
+      this._images.set(key, img);
+    }
+    while (this._images.size > MAX_CACHED_IMAGES) {
+      const first = this._images.keys().next().value;
+      this._images.delete(first);
+    }
+  }
+
+  // ------------------------------------------------------------- viewport
+  _zoomBounds() {
+    const meta = this.model.get('meta');
+    const t = this._transform;
+    const fit = meta && t ? math.fitZoom(meta, t.canvasW, t.canvasH) : 0;
+    return [fit / MIN_ZOOM_PAD, MAX_ZOOM];
+  }
+
+  _maybeSendInitialViewport() {
+    const meta = this.model.get('meta');
+    if (
+      !meta ||
+      !this.model.get('slide_open') ||
+      !this.el.clientWidth ||
+      this._lastSentViewport
+    ) {
+      return;
+    }
+    const t = {
+      cx: meta.dimensions[0] / 2,
+      cy: meta.dimensions[1] / 2,
+      zoom: math.fitZoom(meta, this._canvas.clientWidth, this._canvas.clientHeight),
+      canvasW: this._canvas.clientWidth,
+      canvasH: this._canvas.clientHeight,
+    };
+    this._transform = t;
+    this._sendViewport();
+    this._requestDraw();
+  }
+
+  /** Debounce interaction-driven viewport updates to Python. */
+  _scheduleSync() {
+    if (this._syncTimer !== null) return;
+    this._syncTimer = window.setTimeout(() => {
+      this._syncTimer = null;
+      this._sendViewport();
+    }, SYNC_DEBOUNCE_MS);
+  }
+
+  _sendViewport() {
+    if (!this._transform) return;
+    const vp = math.transformToViewport(this._transform);
+    if (this._lastSentViewport && vp.cx === this._lastSentViewport.cx &&
+        vp.cy === this._lastSentViewport.cy &&
+        vp.zoom === this._lastSentViewport.zoom &&
+        vp.canvas_w === this._lastSentViewport.canvas_w &&
+        vp.canvas_h === this._lastSentViewport.canvas_h) {
+      return;
+    }
+    this._lastSentViewport = vp;
+    this.model.set('viewport', vp);
+    this.model.save();
+  }
+
+  // ---------------------------------------------------------------- events
+  _bindEvents() {
+    this._canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (!this._transform) return;
+      const factor = Math.exp(-e.deltaY * 0.002);
+      const rect = this._canvas.getBoundingClientRect();
+      const [minZoom, maxZoom] = this._zoomBounds();
+      this._transform = math.zoomAtCursor(
+        this._transform, factor,
+        e.clientX - rect.left, e.clientY - rect.top,
+        minZoom, maxZoom,
+      );
+      this._requestDraw();
+      this._scheduleSync();
+    }, { passive: false });
+
+    this._canvas.addEventListener('pointerdown', (e) => {
+      if (!this._transform) return;
+      this._canvas.setPointerCapture(e.pointerId);
+      this._dragging = { x: e.clientX, y: e.clientY, moved: false };
+    });
+    this._canvas.addEventListener('pointermove', (e) => {
+      if (!this._dragging || !this._transform) return;
+      const dx = e.clientX - this._dragging.x;
+      const dy = e.clientY - this._dragging.y;
+      this._dragging.x = e.clientX;
+      this._dragging.y = e.clientY;
+      this._dragging.moved = true;
+      this._transform = math.panTransform(this._transform, dx, dy);
+      this._requestDraw();
+    });
+    const endDrag = () => {
+      if (!this._dragging) return;
+      const moved = this._dragging.moved;
+      this._dragging = null;
+      if (moved) this._scheduleSync();
+    };
+    this._canvas.addEventListener('pointerup', endDrag);
+    this._canvas.addEventListener('pointercancel', endDrag);
+
+    this._canvas.addEventListener('dblclick', (e) => {
+      if (!this._transform) return;
+      const rect = this._canvas.getBoundingClientRect();
+      const [minZoom, maxZoom] = this._zoomBounds();
+      this._transform = math.zoomAtCursor(
+        this._transform, 2,
+        e.clientX - rect.left, e.clientY - rect.top,
+        minZoom, maxZoom,
+      );
+      this._requestDraw();
+      this._scheduleSync();
+    });
+
+    const bar = this.el.querySelector('.islide-toolbar');
+    bar.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn || !this._transform) return;
+      this._toolbarAction(btn.dataset.action);
+    });
+
+    // Minimap: click/drag to move the view center.
+    const mini = this._minimapWrap;
+    mini.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      mini.setPointerCapture(e.pointerId);
+      this._minimapJump(e);
+      const move = (ev) => this._minimapJump(ev);
+      const up = () => {
+        mini.removeEventListener('pointermove', move);
+        mini.removeEventListener('pointerup', up);
+      };
+      mini.addEventListener('pointermove', move);
+      mini.addEventListener('pointerup', up);
+    });
+  }
+
+  _toolbarAction(action) {
+    const t = this._transform;
+    const meta = this.model.get('meta');
+    const [minZoom, maxZoom] = this._zoomBounds();
+    switch (action) {
+      case 'zoom-in':
+        this._transform = math.zoomAtCursor(
+          t, 2, t.canvasW / 2, t.canvasH / 2, minZoom, maxZoom);
+        break;
+      case 'zoom-out':
+        this._transform = math.zoomAtCursor(
+          t, 1 / 2, t.canvasW / 2, t.canvasH / 2, minZoom, maxZoom);
+        break;
+      case 'fit':
+        this._transform = {
+          cx: meta.dimensions[0] / 2,
+          cy: meta.dimensions[1] / 2,
+          zoom: math.fitZoom(meta, t.canvasW, t.canvasH),
+          canvasW: t.canvasW,
+          canvasH: t.canvasH,
+        };
+        break;
+      case '1:1':
+        this._transform = math.makeTransform(
+          t.cx, t.cy, 1, t.canvasW, t.canvasH);
+        break;
+    }
+    this._requestDraw();
+    this._scheduleSync();
+  }
+
+  _minimapJump(e) {
+    const meta = this.model.get('meta');
+    const t = this._transform;
+    if (!meta || !t) return;
+    const rect = this._minimapImg.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    this._transform = math.makeTransform(
+      fx * meta.dimensions[0],
+      fy * meta.dimensions[1],
+      t.zoom, t.canvasW, t.canvasH,
+    );
+    this._requestDraw();
+    this._scheduleSync();
+  }
+
+  // -------------------------------------------------------------- drawing
+  _requestDraw() {
+    if (this._drawQueued) return;
+    this._drawQueued = true;
+    requestAnimationFrame(() => {
+      this._drawQueued = false;
+      this._drawNow();
+    });
+  }
+
+  _drawNow() {
+    const t = this._transform;
+    if (!t || !this.model.get('meta')) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = this._canvas.clientWidth;
+    const h = this._canvas.clientHeight;
+    if (this._canvas.width !== Math.round(w * dpr)) {
+      this._canvas.width = Math.round(w * dpr);
+    }
+    if (this._canvas.height !== Math.round(h * dpr)) {
+      this._canvas.height = Math.round(h * dpr);
+    }
+    const ctx = this._canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawScene(ctx, {
+      transform: t,
+      meta: this.model.get('meta'),
+      tileGeo: this.model.get('tile_geo'),
+      images: this._images,
+    });
+    this._drawMinimapViewport();
+    this._updateReadout();
+  }
+
+  _layoutMinimap() {
+    const meta = this.model.get('meta');
+    const url = this.model.get('minimap_img');
+    if (!meta || !url) return;
+    // Fit the overview inside the minimap box, preserving aspect.
+    const boxW = 92, boxH = 180;
+    const [sw, sh] = meta.dimensions;
+    const scale = Math.min(boxW / sw, boxH / sh);
+    const w = Math.max(1, Math.round(sw * scale));
+    const h = Math.max(1, Math.round(sh * scale));
+    this._minimapImg.style.width = `${w}px`;
+    this._minimapImg.style.height = `${h}px`;
+    this._minimapRect.width = w;
+    this._minimapRect.height = h;
+    this._minimapRect.style.width = `${w}px`;
+    this._minimapRect.style.height = `${h}px`;
+  }
+
+  _drawMinimapViewport() {
+    const meta = this.model.get('meta');
+    const t = this._transform;
+    if (!meta || !t) return;
+    const w = this._minimapRect.width;
+    const h = this._minimapRect.height;
+    const ctx = this._minimapRect.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    const [sw, sh] = meta.dimensions;
+    const bbox = math.viewportL0Bbox(t);
+    const x = (bbox.x0 / sw) * w;
+    const y = (bbox.y0 / sh) * h;
+    const ww = ((bbox.x1 - bbox.x0) / sw) * w;
+    const hh = ((bbox.y1 - bbox.y0) / sh) * h;
+    ctx.strokeStyle = '#0066cc';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(
+      Math.max(0, x), Math.max(0, y),
+      Math.min(w, x + ww) - Math.max(0, x),
+      Math.min(h, y + hh) - Math.max(0, y),
+    );
+  }
+
+  _updateReadout() {
+    const meta = this.model.get('meta');
+    const t = this._transform;
+    if (!meta || !t) return;
+    const mpp = meta.mpp;
+    const mppTxt = mpp ? ` · ${(mpp / t.zoom).toPrecision(3)} µm/px` : '';
+    this._readout.textContent =
+      `${t.zoom < 0.01 ? t.zoom.toExponential(1) : t.zoom.toPrecision(3)}×${mppTxt}`;
+  }
+
+  // -------------------------------------------------------------- resizing
+  _onResize() {
+    const t = this._transform;
+    const w = this._canvas.clientWidth;
+    const h = this._canvas.clientHeight;
+    if (!w || !h) return;
+    if (t) {
+      if (t.canvasW !== w || t.canvasH !== h) {
+        this._transform = math.makeTransform(
+          t.cx, t.cy, t.zoom, w, h);
+        this._requestDraw();
+        this._scheduleSync();
+      }
+    } else {
+      this._maybeSendInitialViewport();
+    }
+  }
+
+  remove() {
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+    }
+    if (this._syncTimer !== null) {
+      window.clearTimeout(this._syncTimer);
+    }
+    super.remove();
+  }
+}

@@ -1,14 +1,26 @@
-"""islide — interactive whole-slide pathology image viewer for Jupyter."""
+"""jupyter-islide — interactive whole-slide pathology image viewer for Jupyter."""
 from .backend import OpenSlideBackend, SlideBackend
 from .cache import TileCache
 from .plan import ReadPlan, Tile, plan_viewport, select_level
 from .viewport import SlideMeta, Viewport, fit_zoom
-from .widget import SlideViewer
+from .widget import HtmlSlideViewer, SlideViewer
+
+
+def _jupyter_labextension_paths():
+    """Tell JupyterLab where the pre-built widget extension lives.
+
+    The ``hatch-jupyter-builder`` hook builds ``frontend/`` into
+    ``frontend/labextension/`` at wheel-build time; that directory sits next
+    to this package, hence the ``..`` in ``src``.
+    """
+    return [{"src": "../frontend/labextension", "dest": "jupyter-islide"}]
+
 
 __version__ = "0.0.1"
 
 __all__ = [
     "SlideViewer",
+    "HtmlSlideViewer",
     "SlideMeta",
     "Viewport",
     "fit_zoom",

@@ -1,10 +1,13 @@
 [build-system]
-requires = ["hatchling"]
+requires = [
+    "hatchling",
+    "jupyterlab==4.*",
+]
 build-backend = "hatchling.build"
 
 [project]
-name = "islide"
-version = "0.0.2"
+name = "jupyter-islide"
+version = "0.0.3"
 description = "Interactive whole-slide pathology image viewer for Jupyter, backed by OpenSlide"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +22,24 @@ dev = ["pytest>=7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["islide"]
+
+# Install the pre-built JupyterLab extension into JupyterLab's standard
+# labextensions discovery path.
+[tool.hatch.build.targets.wheel.shared-data]
+"frontend/labextension" = "share/jupyter/labextensions/jupyter-islide"
+
+# Build the frontend/ labextension into frontend/labextension/ at wheel build time.
+[tool.hatch.build.hooks.jupyter-builder]
+dependencies = ["hatch-jupyter-builder>=0.8.6"]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = ["frontend/labextension/package.json"]
+# Let `pip install -e .` succeed even when node/npm are unavailable.
+optional-editable-build = "true"
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+path = "frontend"
+build_cmd = "build"
+npm = ["npm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

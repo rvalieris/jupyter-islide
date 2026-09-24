@@ -1,4 +1,4 @@
-# islide — Design Document
+# jupyter-islide — Design Document
 
 An [ipywidgets](https://ipywidgets.readthedocs.io/)-based widget for interactively
 exploring pathology whole-slide images (WSIs) in Jupyter, backed by
@@ -58,7 +58,7 @@ notebook, drive it from Python.
 │  Jupyter frontend (classic notebook or JupyterLab)         │
 │                                                            │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  islide JS view (small @jupyter-widgets view)        │  │
+│  │  jupyter-islide JS view (small @jupyter-widgets view)│  │
 │  │                                                      │  │
 │  │  canvas#image      canvas#annotations                │  │
 │  │  (tile composit)   (shapes in slide coords)          │  │
@@ -170,44 +170,103 @@ e.g. 1280 × 720 ≈ 3.7 MB RGBA) and slice it into tiles. Consequences:
 
 ## 6. Frontend (JS view)
 
-A small custom widget view (`islide` npm package, one view, no build deps
-beyond `@jupyter-widgets/base`). This is the standard ipywidgets route and
-works identically in classic notebooks and JupyterLab. (A prototype mode is
-allowed for M0 — see §10 — but the shipped design is the JS view.)
+A small custom widget view (`frontend/`, npm name `jupyter-islide`, one
+view, no build deps beyond `@jupyter-widgets/base`). This is the standard
+ipywidgets route and works identically in classic notebooks and JupyterLab
+(the M0 HTML viewer `HtmlSlideViewer` is kept as the no-extension fallback —
+see §10).
 
-### 6.1 DOM layout
+### 6.1 DOM layout (implemented in `view.js`)
 
 ```
 <div.islide-view>
-  <canvas #image>            ← tiles
-  <canvas #annotations>      ← shapes (device-pixel-ratio aware)
-  <div #minimap>
-     <img #minimap-img>      ← slide overview (top level / thumbnail)
-     <canvas #minimap-rect>  ← current-viewport rectangle
+  <div.islide-canvas-wrap>
+    <canvas.islide-canvas>           ← tiles (device-pixel-ratio aware)
+    <div.islide-minimap>
+       <img.islide-minimap-img>      ← slide overview (top-level JPEG)
+       <canvas.islide-minimap-rect>  ← current-viewport rectangle
+    </div>
   </div>
-  <div #toolbar>
-     [−] [+] [fit] [1:1]  mpp readout: "0.48 µm/px"   zoom readout
+  <div.islide-toolbar>
+    [−] [+] [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  status
   </div>
 </div>
 ```
 
+A second `#annotations` canvas lands with M2.
+
+### 6.1.1 Package layout & registration (implemented)
+
+```
+frontend/
+  tilemath.js    pure math: fitZoom, zoomAtCursor, panTransform,
+                 tileScreenRect, visibleTiles, viewportL0Bbox, …
+  compositor.js  drawScene(ctx, {transform, meta, tileGeo, images}) —
+                 the only place pixels are drawn; pure over a ctx
+  model.js       SlideModel extends DOMWidgetModel (defaults only)
+  view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap)
+  defaults.js    SLIDE_MODEL_DEFAULTS — the trait names shared with Python
+  labextension.js  registers the module with IJupyterWidgetRegistry
+  index.js     re-exports (npm "main")
+  style/index.css
+```
+
+Registration (base-6 pattern, verified against `@jupyter-widgets/base`
+6.0.12 and `jupyter-widgets-jupyterlab-manager` 5.0.16):
+
+```js
+registry.registerWidget({
+  name: 'jupyter-islide',    // must equal _model_module
+  version: '1.0.0',          // must satisfy _model_module_version (semver)
+  exports: { SlideModel, SlideView },  // keys = _model_name/_view_name
+});
+```
+
+The manager resolves the Python widget's `_model_module`/
+`_model_module_version` through this registry
+(`semver.maxSatisfying` over registered versions) and instantiates the
+`_model_name` class, then creates a view per the `_view_name` export.
+Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
+`render()` (`this.el` already exists), bind with
+`this.listenTo(this.model, 'change:<attr>', …)`, and send state with
+`this.model.set(attr, value); this.model.save();`.
+
 ### 6.2 Interactions → state
 
-| Input | Effect |
-|---|---|
-| wheel / trackpad pinch | zoom about the cursor; `zoom` is continuous, clamped to `[1/level_downsamples[-1]·… , max_zoom]` (max_zoom ≈ 2–4× level-0 for pixel peeping) |
-| left drag | pan |
-| double-click | zoom in one step at cursor |
-| right-drag or shift+drag | rubber-band region select (Python callback with slide-coord rect) |
-| click | point callback (slide coords) |
-| minimap click/drag | center viewport on that point; viewport rect drag = move |
-| toolbar | −/+, fit slide to height, 1:1 |
+| Input | Effect | Status |
+|---|---|---|
+| wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`) | M1 ✅ |
+| left drag (pointer events) | pan | M1 ✅ |
+| double-click | zoom in ×2 at cursor | M1 ✅ |
+| minimap click/drag | center viewport on that point | M1 ✅ |
+| toolbar | −/+, fit slide, 1:1 | M1 ✅ |
+| right-drag or shift+drag | rubber-band region select (Python callback with slide-coord rect) | M2 |
+| click | point callback (slide coords) | M2 |
 
-All of these mutate the **viewport trait** (`{cx, cy, zoom}` in slide
-coords) — the *only* JS→Python channel for navigation. Python re-plans tiles
-and pushes back. Click/region callbacks are also trait updates
-(`last_click`, `last_region`), so the same round-trip covers everything and
-Python can replay state after a kernel restart of the widget.
+All of these mutate the **viewport trait** — the *only* JS→Python channel
+for navigation. The wire form is
+`{cx, cy, zoom, canvas_w, canvas_h}`: slide-center + zoom plus the canvas
+size (so Python can plan exactly what the view sees, and so programmatic
+`set_zoom`/`center_on` round-trips through the same shape). The view is the
+**sole writer** of `viewport` from JS: it never echoes Python's viewport
+back, it only sends interaction-driven updates (debounced 120 ms, coalesced
+by Python onto one background render thread).
+
+Between round-trips the view keeps a **local transform**
+(`{cx, cy, zoom, canvasW, canvasH}`) and reprojects the *same* tile geometry
+(`tile_geo`, absolute level-pixel crops) under it — pan/zoom is instant,
+then the debounced sync triggers the next Python tile pass. The view caches
+decoded tile images (insertion-order LRU, 400 entries) so back-pans are
+canvas-only.
+
+Click/region callbacks are also trait updates (`last_click`,
+`last_region` — reserved now, wired in M2), so the same round-trip covers
+everything and Python can replay state after a kernel restart of the widget.
+
+Canvas is DPR-aware: backing store is `clientSize × devicePixelRatio`,
+drawing is in CSS pixels (`setTransform(dpr, 0, 0, dpr, 0, 0)`). Resizes go
+through a `ResizeObserver`, which updates the transform's canvas size and
+re-syncs.
 
 ### 6.3 Annotations layer
 
@@ -225,35 +284,43 @@ Python can replay state after a kernel restart of the widget.
 from islide import SlideViewer
 
 v = SlideViewer("sample.svs")   # opens in background; safe to display now
-display(v)                      # renders as soon as the slide is open
+display(v)                      # canvas renders once the slide is open
+v.wait()                       # block until open (raises on open failure)
 
 # programmatic navigation (slide coords = level-0 px)
-v.center_on(120_000, 80_000, mpp=0.25)
-v.center_on(120_000, 80_000, zoom=2)          # alternative units
-viewport = v.viewport          # Viewport(cx, cy, zoom, mpp_per_px)
-bbox = v.viewport_bbox()       # (x0, y0, x1, y1) in slide coords
-
-# event hooks (slide coordinates, always)
-v.on_click.connect(lambda p: print("clicked", p))
-v.on_region.connect(lambda rect: crop = v.read_crop(rect))
+v.center_on(120_000, 80_000)
+v.set_zoom(2.0)                # clamped to [fit/4, 16]
+v.set_zoom(1.0, cx=50_000, cy=40_000)   # zoom + center in one call
+bbox = v.viewport_bbox()       # (x0, y0, x1, y1) in slide coords, clamped
 
 # data out
-img = v.read_crop((x0, y0, x1, y1))     # PIL Image at level 0 (RGBA)
-v.set_annotations(geojson="roi.geojson")
+img = v.read_crop(bbox)        # PIL Image at level 0 (RGBA)
+
+# M2 (reserved): event hooks, annotations
+# v.on_click.connect(lambda p: print("clicked", p))
+# v.on_region.connect(lambda rect: v.read_crop(rect))
+# v.set_annotations(geojson="roi.geojson")
+
+v.close()                      # joins open thread, closes the slide handle
 ```
 
-Traits (the comm contract):
+Widget identity (must match the JS module, §6.1.1):
+`_model_name="SlideModel"`, `_view_name="SlideView"`,
+`_model_module="jupyter-islide"`, `_model_module_version="1.0.0"`.
+
+Traits (the comm contract; synced names are guarded by a cross-language
+test — Python trait set == `frontend/defaults.js` keys):
 
 | Trait | Dir | Type | Notes |
 |---|---|---|---|
-| `path` | Py | str | slide file |
-| `slide_open` | Py→JS | bool | disables toolbar until open |
-| `meta` | Py→JS | dict | dims, levels, ds factors, mpp, vendor |
-| `viewport` | JS⇄Py | dict | `{cx, cy, zoom}` |
-| `tiles` | Py→JS | dict | `{key: dataURL}` — replaced wholesale per push |
-| `annotations` | Py⇄JS | list | shape model |
-| `last_click` / `last_region` | JS→Py | dict | consumed by Python callbacks |
-| `minimap_img` | Py→JS | dataURL | set once |
+| `slide_open` | Py→JS | bool | false until open (or on error) |
+| `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
+| `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
+| `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push |
+| `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
+| `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
+| `last_click` / `last_region` | JS→Py | dict | reserved for M2 callbacks |
+| `status` | Py→JS | str | status line (open progress / error / live zoom·level·tile info) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
 
@@ -328,9 +395,9 @@ fetch pass.
 | # | Milestone | Demo |
 |---|---|---|
 | M0 ✅ | **Spike: static pipeline** *(done)*. Viewport state in Python, toolbar/sliders (ipywidgets buttons + a zoom `FloatLogSlider`) drive rendering; tiles pushed to an `HTML` widget as stacked `<img>` tags. No mouse. Proves: openslide plumbing, level selection, one-read-per-viewport, JPEG over comm, cache. Implementation notes: the slide opens **synchronously** in `__init__` (local opens were measured at ~0 s; background open comes with the M1 JS view's loading state), and the HTML compositor lives in `widget.py` only — `plan`/`fetch`/`cache`/`encode` are final-shape. | `examples/m0_demo.ipynb` + zoom buttons |
-| M1 | **Interactive JS view.** Canvas compositor, wheel/drag/dblclick pan-zoom, minimap, toolbar, trait contract from §7. Replaces M0's HTML hack (kept as `fallback=True` mode for broken-JS environments? — decide at M1). | smooth pan/zoom in classic nb + lab |
+| M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor + headless widget tests; the extension build path is documented, see §11), and the M2 mouse callbacks. | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
 | M2 | **Annotations.** Canvas overlay layer, GeoJSON import, click-to-add point, `last_region` rubber-band select, callbacks. | `v.on_region` + GeoJSON overlay example |
-| M3 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `islide`, `pip install islide[dev]`, CI. | published package |
+| M3 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 ## 11. Testing
 
@@ -347,33 +414,79 @@ fetch pass.
     (`tile=(256, 256)`) opens fine, and a hand-written multi-page "pyramid"
     TIFF was detected as 1 level (the generic-TIFF multi-resolution rules
     are stricter than "smaller sub-IFDs").
-- **Widget smoke test:** instantiate `SlideViewer`, simulate viewport trait
-  changes, assert tile keys/payloads without a browser. JS covered by manual
-  matrix (classic nb / lab / ×2 DPR / ×1).
+- **M1 widget tests (headless, `tests/test_widget_m1.py`):** the M1
+  `SlideViewer` is a plain Python object until displayed, so the whole
+  Python-side state machine is tested without a browser: background open +
+  `wait()`, `meta` shape, headless fit viewport default, `tiles`/`tile_geo`
+  key + geometry contract (cross-checked against a fresh `plan_viewport`),
+  cache invariance (pan away and back → byte-identical tile payloads),
+  `set_zoom`/`center_on`/`viewport_bbox`/`read_crop`, zoom clamping,
+  JS-originated viewport trait change → background render, open-failure
+  error path, `close()` idempotence.
+- **Cross-language contract test:** the Python synced trait names are
+  asserted to equal the keys in `frontend/defaults.js` (both directions of
+  the same guard), so the comm contract can't drift.
+- **JS tests (no browser, `frontend/test/`, `node --test`):** the pure
+  math (`tilemath.js`) — round-trips, cursor-fixed zoom, pan, tile screen
+  rects (checked against the M0 screen-box formula), visible-tile selection,
+  zoom clamping — and the compositor (`compositor.js`) against a mock 2D
+  context (white underlay, per-tile `drawImage` rects, skip-not-ready, and
+  re-projection under a changed local transform). The DOM/event wiring in
+  `view.js` is thin over these and is verified by the manual matrix when a
+  browser is available (classic nb / lab / ×2 DPR).
 
 ## 12. Packaging & Dependencies
 
 ```
 islide/
-├── pyproject.toml            # hatchling; deps: openslide-python>=1.4,
+├── pyproject.toml            # hatchling + hatch-jupyter-builder hook;
+│                             #   deps: openslide-python>=1.4,
 │                             #   pillow>=9, ipywidgets>=8
-├── python/islide/
-│   ├── __init__.py           # SlideViewer, Viewport, shapes
-│   ├── widget.py             # DOMWidget + traits + state machine
+├── islide/
+│   ├── __init__.py           # SlideViewer, HtmlSlideViewer, Viewport, …
+│   │                         # + _jupyter_labextension_paths()
+│   ├── widget.py             # M1 DOMWidget + M0 HTML viewer + state machine
 │   ├── backend.py            # SlideBackend protocol, OpenSlideBackend
 │   ├── plan.py               # viewport -> read plan (pure)
+│   ├── viewport.py           # SlideMeta + Viewport (pure)
 │   ├── cache.py              # TileCache
-│   └── annotations.py        # shape model + GeoJSON in/out
-└── js/src/
-    ├── index.ts              # widget registration (npm: islide)
-    └── view.ts               # canvas compositor + input (no deps)
+│   ├── fetch.py              # plan -> tiles (cache + one read, cropped)
+│   └── encode.py             # tile -> JPEG data URL
+└── frontend/                 # JS canvas view (npm: jupyter-islide)
+    ├── tilemath.js  compositor.js  model.js  view.js
+    ├── defaults.js  labextension.js  index.js  style/index.css
+    ├── labextension/  # build output (gitignored) — compiled labextension
+    └── test/             # node --test (pure math + compositor)
 ```
 
 - Python: `openslide-python>=1.4` (uses the OO API; §8 notes), `pillow`,
   `ipywidgets>=8`. System lib: `libopenslide` — conda-forge `openslide`
   package, or `libopenslide0` on Debian/Ubuntu.
-- JS: private npm package `islide`, no dependencies beyond
-  `@jupyter-widgets/base`; built with the standard jupyterlab extension tooling.
+- JS: npm package `jupyter-islide` (the wire module name registered with
+  the widget registry is `jupyter-islide`), no runtime dependency beyond
+  `@jupyter-widgets/base` (declared a shared/singleton package so it is never
+  bundled into the extension bundle).
+
+### 12.1 Release packaging: one `pip install`, Python + extension
+
+The wheel is built by `hatchling` with the `hatch-jupyter-builder` hook
+(`[tool.hatch.build.hooks.jupyter-builder]` in `pyproject.toml`). At wheel
+build time the hook runs `npm install` + `npm run build` in `frontend/` — i.e.
+`jupyter labextension build .` — producing `frontend/labextension/` (the
+`outputDir` in `frontend/package.json`). hatchling's `shared-data` then places
+that directory at `share/jupyter/labextensions/jupyter-islide/` inside the wheel, the
+standard JupyterLab 4 labextensions discovery path. So:
+
+- `pip install .` / `pip install jupyter-islide` installs **both** the Python package
+  and the pre-built extension in one step (no end-user npm).
+- The build env gets `jupyterlab==4.*` automatically (declared in
+  `[build-system] requires`); Node/npm must be on the PATH.
+- `islide/_jupyter_labextension_paths()` (matching the ipyleaflet pattern)
+  points at `../frontend/labextension` → `dest: jupyter-islide`, which is what
+  `jupyter-builder develop islide` uses for the editable live-reload workflow.
+- Mirrors ipyleaflet's mechanism (hatch `jupyter-builder` hook +
+  `shared-data`); we keep a single package (`jupyter-islide`) rather than splitting
+  into a pure-Python package + a separate `jupyter-islide` extension package.
 
 ## 13. Open Questions
 
