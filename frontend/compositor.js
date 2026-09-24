@@ -21,6 +21,17 @@ import * as math from './tilemath.js';
  * @param {Map<string, object>} opts.images  key -> decoded image (HTMLImageElement)
  * @returns {number} number of tiles drawn
  */
+/**
+ * Seam margin: each tile's destination rect is inflated by this many screen
+ * px on every side, so adjacent tiles overlap by ~2*SEAM_MARGIN px. Tiles
+ * carry fractional screen rects and each drawImage is rasterized
+ * independently, so without overlap the shared boundary can end up only
+ * partially covered by both neighbours, leaving a hairline (1 device px)
+ * white line where the canvas background shows through. The slight stretch
+ * (1 px on a 256+ px tile) is imperceptible.
+ */
+const SEAM_MARGIN = 0.5;
+
 export function drawScene(ctx, { transform, meta, tileGeo, images }) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, transform.canvasW, transform.canvasH);
@@ -30,7 +41,13 @@ export function drawScene(ctx, { transform, meta, tileGeo, images }) {
   for (const tile of math.visibleTiles(transform, tileGeo, ds)) {
     const img = images.get(tile.key);
     if (!img || !img._ready) continue;
-    ctx.drawImage(img, tile.left, tile.top, tile.w, tile.h);
+    ctx.drawImage(
+      img,
+      tile.left - SEAM_MARGIN,
+      tile.top - SEAM_MARGIN,
+      tile.w + 2 * SEAM_MARGIN,
+      tile.h + 2 * SEAM_MARGIN,
+    );
     n += 1;
   }
   return n;

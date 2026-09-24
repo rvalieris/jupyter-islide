@@ -329,13 +329,24 @@ class SlideViewer(widgets.DOMWidget):
 # M0: pure-ipywidgets HTML tile composite (fallback / reference pipeline)
 # ---------------------------------------------------------------------------
 
+# Seam margin (screen px): each <img> box is inflated by this much on every
+# side, so screen-adjacent tiles overlap by ~2*_SEAM_MARGIN_PX px. The
+# browser lays out and rounds each <img>'s fractional CSS box independently,
+# so without the overlap the shared edge can end up only partially covered
+# by both neighbours, letting the white container background show through
+# as a hairline. The stretch (1 px on a 256+ px tile) is imperceptible.
+# Mirrors SEAM_MARGIN in frontend/compositor.js.
+_SEAM_MARGIN_PX = 0.5
+
 
 class HtmlSlideViewer(widgets.Box):
     """Toolbar/slider-driven WSI viewer without custom JS (M0).
 
     The display is an HTML composite of absolutely-positioned ``<img>``
     tiles; it works in any ipywidgets 8 environment (no JupyterLab
-    extension needed) at the cost of hairline seams and no mouse input.
+    extension needed) at the cost of no mouse input. Tiles are drawn
+    inflated by a sub-pixel seam margin (see ``_SEAM_MARGIN_PX``) so
+    adjacent tiles overlap and no white hairline can show through.
     """
 
     def __init__(
@@ -470,9 +481,11 @@ class HtmlSlideViewer(widgets.Box):
         for t in plan.tiles:
             url = jpeg_data_url(tiles[t.key])
             left, top, w, h = t.screen
+            m = _SEAM_MARGIN_PX
             parts.append(
-                f'<img src="{url}" style="position:absolute;left:{left:.2f}px;top:{top:.2f}px;'
-                f'width:{w:.2f}px;height:{h:.2f}px;"/>'
+                f'<img src="{url}" style="position:absolute;'
+                f'left:{left - m:.2f}px;top:{top - m:.2f}px;'
+                f'width:{w + 2 * m:.2f}px;height:{h + 2 * m:.2f}px;"/>'
             )
         self.html.value = (
             f'<div style="position:relative;width:{vp.canvas_w}px;height:{vp.canvas_h}px;'

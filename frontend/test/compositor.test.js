@@ -42,18 +42,50 @@ test('drawScene paints the canvas white and draws every visible ready tile', () 
   assert.equal(ctx.calls.fill, 1);
   assert.deepEqual(ctx.lastFill, [0, 0, 512, 512]);
   assert.equal(ctx.fillStyle, '#ffffff');
-  // screen origin is l0 (0,0): tile (tx,ty) draws at (tx*256, ty*256)
-  const byKey = Object.fromEntries(
-    Object.keys(geo).map((k, i) => [k, i]),
-  );
+  // screen origin is l0 (0,0): tile (tx,ty) draws at (tx*256, ty*256),
+  // inflated by the seam margin (0.5 px per side, 1 px per dimension)
   for (const [img, left, top, w, h] of ctx.calls.draw) {
-    assert.ok(Math.abs(w - 256) < 1e-9);
-    assert.ok(Math.abs(h - 256) < 1e-9);
+    assert.ok(Math.abs(w - 257) < 1e-9);
+    assert.ok(Math.abs(h - 257) < 1e-9);
   }
   assert.deepEqual(
     ctx.calls.draw.map((d) => [d[1], d[2]]).sort((a, b) => a[0] - b[0]),
-    [[0, 0], [0, 256], [256, 0], [256, 256]],
+    [[-0.5, -0.5], [-0.5, 255.5], [255.5, -0.5], [255.5, 255.5]],
   );
+});
+
+test('adjacent tiles overlap on screen, so seams cannot show through', () => {
+  const t = { cx: 128.3, cy: 128.3, zoom: 1.5, canvasW: 512, canvasH: 512 };
+  // fractional screen rects: exact (un-inflated) edges do not land on
+  // device-pixel boundaries
+  const geo = {
+    '0:0:0': [0, 0, 0, 256, 256],
+    '0:1:0': [0, 256, 0, 256, 256],
+    '0:0:1': [0, 0, 256, 256, 256],
+    '0:1:1': [0, 256, 256, 256, 256],
+  };
+  const images = new Map(
+    Object.keys(geo).map((k) => {
+      const img = { _ready: true };
+      return [k, img];
+    }),
+  );
+  const ctx = mockCtx();
+  assert.equal(drawScene(ctx, { transform: t, meta: META, tileGeo: geo, images }), 4);
+  const keyOf = new Map([...images.values()].map((img, i) => [img, Object.keys(geo)[i]]));
+  const rects = new Map(
+    ctx.calls.draw.map(([img, left, top, w, h]) => [
+      keyOf.get(img),
+      { left, top, right: left + w, bottom: top + h },
+    ]),
+  );
+  // each pair of screen-adjacent tiles must overlap (strictly), both
+  // horizontally (east/west) and vertically (south/north):
+  // west.right > east.left and north.bottom > south.top
+  assert.ok(rects.get('0:0:0').right > rects.get('0:1:0').left);
+  assert.ok(rects.get('0:0:1').right > rects.get('0:1:1').left);
+  assert.ok(rects.get('0:0:0').bottom > rects.get('0:0:1').top);
+  assert.ok(rects.get('0:1:0').bottom > rects.get('0:1:1').top);
 });
 
 test('drawScene skips off-canvas tiles and not-yet-loaded images', () => {
@@ -79,17 +111,18 @@ test('drawScene reprojections under a local transform (smooth pan)', () => {
   const images = new Map([['0:2:1', { _ready: true, id: 'img' }]]);
   const ctx = mockCtx();
   assert.equal(drawScene(ctx, { transform: t0, meta: META, tileGeo: geo, images }), 1);
+  const seam = 0.5; // compositor seam margin (see compositor.js)
   const [img, left0, top0, w0] = ctx.calls.draw[0];
   assert.equal(img.id, 'img');
-  // l0 origin (512, 256) -> screen
-  assert.ok(Math.abs(left0 - ((512 - t0.cx) * t0.zoom + t0.canvasW / 2)) < 1e-9);
-  assert.ok(Math.abs(top0 - ((256 - t0.cy) * t0.zoom + t0.canvasH / 2)) < 1e-9);
-  assert.ok(Math.abs(w0 - 256 * 1.0 * t0.zoom) < 1e-9);
+  // l0 origin (512, 256) -> screen (rect inflated by the seam margin)
+  assert.ok(Math.abs(left0 - ((512 - t0.cx) * t0.zoom + t0.canvasW / 2) + seam) < 1e-9);
+  assert.ok(Math.abs(top0 - ((256 - t0.cy) * t0.zoom + t0.canvasH / 2) + seam) < 1e-9);
+  assert.ok(Math.abs(w0 - (256 * 1.0 * t0.zoom + 2 * seam)) < 1e-9);
   ctx.calls.draw.length = 0;
   assert.equal(drawScene(ctx, { transform: t1, meta: META, tileGeo: geo, images }), 1);
   const [, left1, top1, w1] = ctx.calls.draw[0];
   // same l0 origin, new transform: cell now exactly fills the canvas
-  assert.ok(Math.abs(left1 - ((512 - t1.cx) * t1.zoom + t1.canvasW / 2)) < 1e-9);
-  assert.ok(Math.abs(top1 - ((256 - t1.cy) * t1.zoom + t1.canvasH / 2)) < 1e-9);
-  assert.ok(Math.abs(w1 - 256 * 1.0 * t1.zoom) < 1e-9);
+  assert.ok(Math.abs(left1 - ((512 - t1.cx) * t1.zoom + t1.canvasW / 2) + seam) < 1e-9);
+  assert.ok(Math.abs(top1 - ((256 - t1.cy) * t1.zoom + t1.canvasH / 2) + seam) < 1e-9);
+  assert.ok(Math.abs(w1 - (256 * 1.0 * t1.zoom + 2 * seam)) < 1e-9);
 });
