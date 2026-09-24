@@ -32,6 +32,8 @@
     "@jupyterlab/builder": "^4.0.0"
   },
   "scripts": {
+    "sync-version": "node sync-version.mjs",
+    "prebuild": "node sync-version.mjs",
     "test": "node --test test/",
     "build": "jupyter labextension build ."
   },

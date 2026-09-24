@@ -1,4 +1,6 @@
 """jupyter-islide — interactive whole-slide pathology image viewer for Jupyter."""
+from importlib.metadata import PackageNotFoundError, version
+
 from .backend import OpenSlideBackend, SlideBackend
 from .cache import TileCache
 from .plan import ReadPlan, Tile, plan_viewport, select_level
@@ -16,7 +18,10 @@ def _jupyter_labextension_paths():
     return [{"src": "../frontend/labextension", "dest": "jupyter-islide"}]
 
 
-__version__ = "0.0.1"
+try:
+    __version__ = version("jupyter-islide")
+except PackageNotFoundError:  # package not installed (e.g. running from source)
+    __version__ = "0.0.0"
 
 __all__ = [
     "SlideViewer",
