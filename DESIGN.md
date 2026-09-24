@@ -100,25 +100,31 @@ keeps the JS tiny.
   - `zoom = 1` ⇒ 1:1 with full resolution.
   - Microscope magnification and µm/px are derived:
     `mpp_screen = mpp_level0 / zoom` (mpp from `openslide.mpp-x` property).
-- **Level selection:** for the current zoom pick the highest pyramid level L
-  with `downsample[L] >= 1/zoom`
-  (i.e. `slide.get_best_level_for_downsample(1.0 / zoom)`). At that level the
-  slide is at least as detailed as the screen, so rendering only ever
-  down-scales (crisp, cheap). We fetch **one** level per viewport, never a
-  level that is lower-res than the screen (which would look blurry).
+- **Level selection:** for the current zoom pick the *finest* pyramid level
+  L with `downsample[L] >= 1/zoom` (smallest such L; coarsest level as a
+  fallback below the pyramid's range). At that level the slide is at least
+  as detailed as the screen, so rendering only ever down-scales (crisp,
+  cheap). We do **not** use `slide.get_best_level_for_downsample(1/zoom)`:
+  it picks the *coarsest* level with `ds <= requested`, which can up-scale
+  (see §8).
 
 ## 5. Rendering Pipeline
 
 Per viewport change (coalesced to at most one in-flight pass):
 
-1. **Plan.** Viewport in slide coords → screen rect → for level L, the
-   covering rectangle in level-L pixels:
-   `rect_L = scale(screen_rect, downsample[L])`, clamped to level-L
-   dimensions.
+1. **Plan.** Viewport in slide coords → screen rect → the covering grid cells
+   at level L (global 256-px grid; cell `(tx, ty)` covers level px
+   `[tx·T, (tx+1)·T) × [ty·T, (ty+1)·T)`). The **read rectangle is the union
+   of those cells, clamped to the level bounds** — anchored to the tile
+   grid, *not* to the viewport edges. This invariant is what makes the
+   `(level, tx, ty)` cache key sound: a tile's crop then depends only on the
+   cell and the slide boundary, never on the viewport (a viewport-anchored
+   rect cuts cells at its edges; the cached partial crop is later served
+   stretched as a full cell — the bug this avoids, regression-tested in
+   `tests/test_integration.py::test_tile_cache_is_viewport_invariant`).
 2. **Fetch.** One `read_region(location, level=L, size=rect_L.size)` call per
-   level (see §5.1), then crop the result into display tiles (e.g. 256 px
-   squares) in Python with PIL. Check the tile cache first; only fetch
-   missing tiles' rectangles.
+   level (see §5.1), then crop the result into display tiles in Python with
+   PIL. Check the tile cache first; only fetch missing tiles' rectangles.
 3. **Encode.** Each tile → JPEG (quality ≈ 85) → base64 in the `tiles` trait:
    `{ "<L>:<tx>:<ty>": "data:image/jpeg;base64,…" }`.
 4. **Draw.** The JS view composites tiles into `canvas#image` at
@@ -143,8 +149,10 @@ e.g. 1280 × 720 ≈ 3.7 MB RGBA) and slice it into tiles. Consequences:
 ### 5.2 Caching
 
 - **TileCache**: LRU keyed by `(level, tx, ty)`, valued by PIL image (decoded,
-  kept in `RGBA`). Budgeted by encoded-size estimate (default 256 MB,
-  configurable). Eviction is by bytes, not count.
+  kept in `RGBA`). Budgeted by decoded-size estimate `w·h·4` (default 256 MB,
+  configurable). Eviction is by bytes, not count. Key validity rests on the
+  grid-anchored read rect (§5, step 1): the cached image for a cell is always
+  exactly `cell ∩ slide bounds`, at every zoom and viewport.
 - **Slide handle**: `OpenSlide` objects are opened lazily on a background
   thread (opening large SVS files can take seconds) and kept open while the
   viewer is live; closed on widget disposal (`on_widget_disposed` / close in
@@ -279,8 +287,22 @@ Environment checked during design (openslide-python 1.4.6, libopenslide 4.0.1):
   - `slide.level_dimensions -> ((w0,h0), (w1,h1), …)`
 - `slide.read_region(location=(x,y), level=L, size=(w,h)) -> PIL.Image`
   (mode `RGBA`). `location` is in level-0 coordinates; `size` is the region
-  size (pixels at level L). Out-of-bounds regions must be clamped by us.
-- `slide.get_best_level_for_downsample(ds) -> int`
+  size (pixels at level L).
+  - **Out-of-bounds** (verified, generic-tiff / libopenslide 4.0.1): the
+    return is always exactly `size`, and out-of-bounds areas are filled with
+    *transparent black* — compositing onto white before JPEG gives the
+    expected white background at the slide edge. Fill color is
+    vendor-dependent, but "always exactly `size`" holds.
+  - **Location anchor** (verified, generic-tiff / 4.0.1): the returned
+    image's top-left is level pixel `floor(location / ds)` per axis
+    (unaligned level-0 locations are accepted). Therefore to anchor a read
+    at exactly level pixel `p` use `location = ceil(p * ds)` (see
+    `islide.plan.anchor_l0`; tested for the real downsample factors of the
+    test slide, including the non-integer ones).
+- `slide.get_best_level_for_downsample(ds) -> int` — picks the *coarsest*
+  level with `ds_level <= requested` (verified: it can return a level that
+  up-samples). islide uses its own never-up-scale selector instead:
+  smallest `L` with `ds[L] >= 1/zoom` (see `islide.plan.select_level`).
 - `slide.get_thumbnail(size=(w,h)) -> PIL.Image`
 - `slide.properties` dict carries `openslide.mpp-x/y`, `openslide.objective-power`,
   `openslide.vendor`, per-level dims/ds, …
@@ -305,7 +327,7 @@ fetch pass.
 
 | # | Milestone | Demo |
 |---|---|---|
-| M0 | **Spike: static pipeline.** Open slide (bg thread), viewport state in Python, toolbar/sliders (ipywidgets buttons + a zoom `LogSlider`) drive rendering; tiles pushed to an `HTML` widget as stacked `<img>` tags or a single data-URL image. No mouse. Proves: openslide plumbing, level selection, one-read-per-viewport, JPEG over comm, cache. | `display(SlideViewer("sample.svs"))` + zoom buttons |
+| M0 ✅ | **Spike: static pipeline** *(done)*. Viewport state in Python, toolbar/sliders (ipywidgets buttons + a zoom `FloatLogSlider`) drive rendering; tiles pushed to an `HTML` widget as stacked `<img>` tags. No mouse. Proves: openslide plumbing, level selection, one-read-per-viewport, JPEG over comm, cache. Implementation notes: the slide opens **synchronously** in `__init__` (local opens were measured at ~0 s; background open comes with the M1 JS view's loading state), and the HTML compositor lives in `widget.py` only — `plan`/`fetch`/`cache`/`encode` are final-shape. | `examples/m0_demo.ipynb` + zoom buttons |
 | M1 | **Interactive JS view.** Canvas compositor, wheel/drag/dblclick pan-zoom, minimap, toolbar, trait contract from §7. Replaces M0's HTML hack (kept as `fallback=True` mode for broken-JS environments? — decide at M1). | smooth pan/zoom in classic nb + lab |
 | M2 | **Annotations.** Canvas overlay layer, GeoJSON import, click-to-add point, `last_region` rubber-band select, callbacks. | `v.on_region` + GeoJSON overlay example |
 | M3 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `islide`, `pip install islide[dev]`, CI. | published package |
@@ -315,16 +337,16 @@ fetch pass.
 - **Unit (no OpenSlide needed):** tile planning, level selection, viewport
   math, coordinate transforms, LRU cache, trait/callback logic — pure
   functions over a `FakeSlide` (metadata-only stub of `SlideBackend`).
-- **Integration (needs libopenslide):** real open/read against synthetic
-  slides. Status of synthetic assets (verified during design):
-  - A **single-level tiled TIFF** written by `tifffile` (`tile=(256, 256)`)
-    opens fine via the generic-TIFF vendor and `read_region` round-trips.
-  - A hand-written **multi-page "pyramid" TIFF was detected as 1 level** —
-    the generic-TIFF multi-resolution rules are stricter than "smaller
-    sub-IFDs". M0 action item: pin down a working synthetic-pyramid recipe
-    (or vendor a small public-domain WSI as test data); either way, the
-    level-selection logic is unit-tested against recorded
-    `(level_count, level_downsamples)` fixtures so this can't block M1.
+- **Integration (needs libopenslide):** real open/read against a real slide,
+  `data/testslide.tiff` (whole-slide tiled TIFF, 37 382 × 73 222 px, 8
+  levels, 0.25 µm/px, opens via the generic-TIFF vendor — this resolved the
+  design-phase question about synthetic pyramids; level-selection math is
+  additionally unit-tested against a fixed `SlideMeta` fixture in
+  `tests/test_plan.py`).
+  - Historical note: a single-level tiled TIFF written by `tifffile`
+    (`tile=(256, 256)`) opens fine, and a hand-written multi-page "pyramid"
+    TIFF was detected as 1 level (the generic-TIFF multi-resolution rules
+    are stricter than "smaller sub-IFDs").
 - **Widget smoke test:** instantiate `SlideViewer`, simulate viewport trait
   changes, assert tile keys/payloads without a browser. JS covered by manual
   matrix (classic nb / lab / ×2 DPR / ×1).
