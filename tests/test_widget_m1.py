@@ -89,8 +89,9 @@ def test_background_open_and_wait(viewer):
     viewer.wait()
     assert viewer.slide_open
     assert viewer.backend is not None
-    # after the initial render the status line carries live view info
-    assert "×" in viewer.status and "tiles" in viewer.status
+    # after the initial render the status line carries the render info
+    # (the live zoom/µm-px live in the JS readout, not the status)
+    assert "level" in viewer.status and "tiles" in viewer.status
 
 
 def test_slide_kwarg_accepts_opened_openslide_object():
@@ -274,11 +275,10 @@ def test_js_originated_viewport_triggers_background_render(viewer):
         "cx": 18691, "cy": 36611, "zoom": 2.0, "canvas_w": 960, "canvas_h": 540
     }
     deadline = time.monotonic() + 10
-    while "zoom 2" not in viewer.status and time.monotonic() < deadline:
+    while viewer.status == before and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert "zoom 2" in viewer.status
+    assert before != viewer.status  # background render reported the new plan
     assert viewer.tiles  # repopulated by the background render
-    assert before != viewer.status
 
 
 # ------------------------------------------------------------------- errors

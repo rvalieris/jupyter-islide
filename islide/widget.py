@@ -339,11 +339,13 @@ class SlideViewer(widgets.DOMWidget):
             urls[k] = jpeg_data_url(tiles[t.key])
         self.tiles = urls
         self.tile_geo = geo
-        mpp = self._meta.mpp
-        mpp_txt = f" · {mpp / vp.zoom:.4g} µm/px" if mpp else ""
+        # Pipeline info only: the live zoom + µm/px belong to the JS
+        # readout (which tracks the local transform); repeating them here
+        # would show the zoom twice — and this line lags the pointer by
+        # the sync debounce anyway. It reports the last completed render.
         self.status = (
-            f"zoom {vp.zoom:.4g}×{mpp_txt} · level {plan.level}/"
-            f"{self._meta.level_count - 1} · {len(plan.tiles)} tiles"
+            f"level {plan.level}/{self._meta.level_count - 1} · "
+            f"{len(plan.tiles)} tiles"
         )
         return plan
 

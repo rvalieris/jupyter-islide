@@ -31,6 +31,7 @@ export class SlideView extends DOMWidgetView {
     this._syncTimer = null;
     this._drawQueued = false;
     this._dragging = null;
+    this._cursor = null; // canvas-relative pointer pos, drives the l0 readout
     this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
 
     // Must exist before _buildDom(): that is where observe(this._canvas)
@@ -74,6 +75,7 @@ export class SlideView extends DOMWidgetView {
                  step="0.05" value="1"/>
         </label>
         <span class="islide-readout"></span>
+        <span class="islide-cursor" title="cursor position, level-0 px"></span>
         <span class="islide-status"></span>
       </div>`;
     this._canvasWrap = this.el.querySelector('.islide-canvas-wrap');
@@ -84,6 +86,7 @@ export class SlideView extends DOMWidgetView {
     this._minimapImg = this.el.querySelector('.islide-minimap-img');
     this._minimapRect = this.el.querySelector('.islide-minimap-rect');
     this._readout = this.el.querySelector('.islide-readout');
+    this._cursorEl = this.el.querySelector('.islide-cursor');
     this._status = this.el.querySelector('.islide-status');
     if (this._resizeObserver) {
       this._resizeObserver.observe(this._canvas);
@@ -265,6 +268,9 @@ export class SlideView extends DOMWidgetView {
       this._dragging = { x: e.clientX, y: e.clientY, moved: false };
     });
     this._canvas.addEventListener('pointermove', (e) => {
+      const rect = this._canvas.getBoundingClientRect();
+      this._cursor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      this._updateCursorReadout();
       if (!this._dragging || !this._transform) return;
       const dx = e.clientX - this._dragging.x;
       const dy = e.clientY - this._dragging.y;
@@ -274,14 +280,23 @@ export class SlideView extends DOMWidgetView {
       this._transform = math.panTransform(this._transform, dx, dy);
       this._requestDraw();
     });
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!this._dragging) return;
       const moved = this._dragging.moved;
       this._dragging = null;
       if (moved) this._scheduleSync();
+      // Touch pointers vanish on release: nothing is hovering anymore.
+      if (e.pointerType !== 'mouse') {
+        this._cursor = null;
+        this._updateCursorReadout();
+      }
     };
     this._canvas.addEventListener('pointerup', endDrag);
     this._canvas.addEventListener('pointercancel', endDrag);
+    this._canvas.addEventListener('pointerleave', () => {
+      this._cursor = null;
+      this._updateCursorReadout();
+    });
 
     this._canvas.addEventListener('dblclick', (e) => {
       if (!this._transform) return;
@@ -415,6 +430,7 @@ export class SlideView extends DOMWidgetView {
     this._drawAnnotations();
     this._drawMinimapViewport();
     this._updateReadout();
+    this._updateCursorReadout();
   }
 
   /** M2: overlay pass — read-only annotation shapes, reprojected each frame. */
@@ -486,6 +502,24 @@ export class SlideView extends DOMWidgetView {
     const mppTxt = mpp ? ` · ${(mpp / t.zoom).toPrecision(3)} µm/px` : '';
     this._readout.textContent =
       `${t.zoom < 0.01 ? t.zoom.toExponential(1) : t.zoom.toPrecision(3)}×${mppTxt}`;
+  }
+
+  /**
+   * Live cursor position in level-0 px (view-local, never synced).
+   * Called on pointer move and after every draw (a toolbar zoom under a
+   * stationary cursor moves the slide point under it, so the readout
+   * must be re-based on the new transform).
+   */
+  _updateCursorReadout() {
+    const el = this._cursorEl;
+    if (!el) return;
+    const t = this._transform;
+    if (!t || !this._cursor) {
+      el.textContent = '';
+      return;
+    }
+    const [lx, ly] = math.screenToL0(t, this._cursor.x, this._cursor.y);
+    el.textContent = `${Math.round(lx)}, ${Math.round(ly)}`;
   }
 
   // -------------------------------------------------------------- resizing

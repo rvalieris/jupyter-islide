@@ -188,7 +188,7 @@ see §10).
     </div>
   </div>
   <div.islide-toolbar>
-    [−] [+] [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  status
+    [−] [+] [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  cursor "18691, 36611"  status
   </div>
 </div>
 ```
@@ -420,7 +420,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
 | `annotations` | Py→JS | list | normalized shapes in level-0 px (`{id, kind, points, label, color}`), M2, read-only |
 | `last_click` / `last_region` | JS→Py | dict | reserved for M3 (interaction) callbacks |
-| `status` | Py→JS | str | status line (open progress / error / live zoom·level·tile info) |
+| `status` | Py→JS | str | status line (open progress / error / last render's level·tile info; the live zoom·µm/px is the JS readout's) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
 
