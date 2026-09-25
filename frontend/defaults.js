@@ -8,6 +8,7 @@ export const SLIDE_MODEL_DEFAULTS = {
   slide_open: false,
   meta: null,
   viewport: null,
+  canvas_h: 540,
   tiles: {},
   tile_geo: {},
   minimap_img: '',

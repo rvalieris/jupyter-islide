@@ -64,6 +64,7 @@ export class SlideView extends DOMWidgetView {
         <span class="islide-readout"></span>
         <span class="islide-status"></span>
       </div>`;
+    this._canvasWrap = this.el.querySelector('.islide-canvas-wrap');
     this._canvas = this.el.querySelector('.islide-canvas');
     this._minimapWrap = this.el.querySelector('.islide-minimap');
     this._minimapImg = this.el.querySelector('.islide-minimap-img');
@@ -73,6 +74,7 @@ export class SlideView extends DOMWidgetView {
     if (this._resizeObserver) {
       this._resizeObserver.observe(this._canvas);
     }
+    this._applyCanvasHeight();
   }
 
   // ------------------------------------------------------- model bindings
@@ -83,6 +85,7 @@ export class SlideView extends DOMWidgetView {
     this.listenTo(this.model, 'change:slide_open', this._onSlideOpen);
     this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
     this.listenTo(this.model, 'change:status', this._onStatusChange);
+    this.listenTo(this.model, 'change:canvas_h', this._applyCanvasHeight);
     this._onMetaChange();
     this._onSlideOpen();
     this._onMinimapChange();
@@ -123,6 +126,18 @@ export class SlideView extends DOMWidgetView {
 
   _onStatusChange() {
     this._status.textContent = this.model.get('status');
+  }
+
+  /**
+   * Apply the user-set viewport height (Python `canvas_h` trait, CSS px).
+   * The ResizeObserver then re-syncs the resized viewport to Python, which
+   * re-plans the tiles at the new canvas size.
+   */
+  _applyCanvasHeight() {
+    const h = this.model.get('canvas_h');
+    if (h) {
+      this._canvasWrap.style.height = `${h}px`;
+    }
   }
 
   _mergeTiles() {
@@ -337,6 +352,16 @@ export class SlideView extends DOMWidgetView {
     const dpr = window.devicePixelRatio || 1;
     const w = this._canvas.clientWidth;
     const h = this._canvas.clientHeight;
+    if (w && h && (t.canvasW !== w || t.canvasH !== h)) {
+      // The canvas was resized without us redrawing (e.g. the RO has not
+      // reported the latest size of an animated resize). Re-sync the
+      // transform to the live size: the backing store below is sized from
+      // the same w/h, so the scene must be laid out for the same size or
+      // the tiles get stretched. The sync makes sure Python gets the new
+      // canvas size as well.
+      this._transform = math.makeTransform(t.cx, t.cy, t.zoom, w, h);
+      this._scheduleSync();
+    }
     if (this._canvas.width !== Math.round(w * dpr)) {
       this._canvas.width = Math.round(w * dpr);
     }
@@ -346,7 +371,7 @@ export class SlideView extends DOMWidgetView {
     const ctx = this._canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawScene(ctx, {
-      transform: t,
+      transform: this._transform,
       meta: this.model.get('meta'),
       tileGeo: this.model.get('tile_geo'),
       images: this._images,
@@ -416,7 +441,13 @@ export class SlideView extends DOMWidgetView {
       if (t.canvasW !== w || t.canvasH !== h) {
         this._transform = math.makeTransform(
           t.cx, t.cy, t.zoom, w, h);
-        this._requestDraw();
+        // Draw synchronously: the ResizeObserver callback runs after
+        // layout but *before* paint, so the current frame is already
+        // painted at the new size. Deferring to requestAnimationFrame
+        // instead leaves a one-frame gap where the old backing store is
+        // CSS-stretched to the new box — visibly squishing/stretching the
+        // tiles while JupyterLab animates the sidebar open/closed.
+        this._drawNow();
         this._scheduleSync();
       }
     } else {

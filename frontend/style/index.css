@@ -7,6 +7,7 @@
 .islide-canvas-wrap {
   position: relative;
   width: 100%;
+  /* fallback until the synced `canvas_h` trait is applied (view.js) */
   height: 540px;
   background: #ffffff;
   border: 1px solid var(--jp-border-color-2, #ccc);

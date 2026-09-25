@@ -21,10 +21,11 @@ Both share the identical pipeline: ``plan_viewport`` -> ``fetch_tiles`` ->
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import Any
 
 import ipywidgets as widgets
-from traitlets import Bool, Dict, Unicode
+from traitlets import Bool, Dict, Int, TraitError, Unicode, validate
 
 from .backend import OpenSlideBackend
 from .cache import TileCache
@@ -75,6 +76,11 @@ class SlideViewer(widgets.DOMWidget):
       (absolute origin of the tile's crop). The view reprojects geometry
       under its local transform, so panning/zooming stays smooth between
       Python round-trips.
+    * ``canvas_h`` (synced int, CSS px) is the user-settable on-screen
+      viewport height: set it at construction or at runtime
+      (``v.canvas_h = 900``). The JS view applies it to the canvas; its
+      ResizeObserver then syncs the resized viewport back, which re-plans
+      the tiles. Headless, the viewport is re-based directly.
     """
 
     # -- widget identity (must match the JS module registered by the
@@ -90,6 +96,15 @@ class SlideViewer(widgets.DOMWidget):
     slide_open = Bool(False).tag(sync=True)
     meta = Dict(default_value=None, allow_none=True).tag(sync=True)  # SlideMeta as a dict
     viewport = Dict(default_value=None, allow_none=True).tag(sync=True)  # _vp_dict
+    canvas_h = Int(540).tag(sync=True)  # on-screen viewport height (CSS px)
+
+    @validate("canvas_h")
+    def _check_canvas_h(self, proposal):
+        v = int(proposal["value"])
+        if v <= 0:
+            raise TraitError("canvas_h must be a positive number of CSS px")
+        return v
+
     tiles = Dict({}).tag(sync=True)  # "L:tx:ty" -> JPEG data URL
     tile_geo = Dict({}).tag(sync=True)  # "L:tx:ty" -> [level, ox, oy, cw, ch]
     minimap_img = Unicode("").tag(sync=True)  # whole-slide overview data URL
@@ -107,7 +122,8 @@ class SlideViewer(widgets.DOMWidget):
     ) -> None:
         super().__init__()
         self.path = str(path)
-        self._default_canvas = (int(canvas_w), int(canvas_h))
+        self._canvas_w = int(canvas_w)
+        self.canvas_h = int(canvas_h)
         self.tile_size = int(tile_size)
         self.cache = TileCache(int(cache_max_mb * 1024 * 1024))
         self.backend: OpenSlideBackend | None = None
@@ -126,6 +142,7 @@ class SlideViewer(widgets.DOMWidget):
         )
         self._open_thread.start()
         self.observe(self._on_viewport_change, names="viewport")
+        self.observe(self._on_canvas_h_change, names="canvas_h")
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
@@ -187,6 +204,13 @@ class SlideViewer(widgets.DOMWidget):
 
     # ----------------------------------------------------------- state access
     @property
+    def _default_canvas(self) -> tuple[int, int]:
+        """Planning canvas size: constructor width + the user-settable
+        ``canvas_h`` trait. Used for the headless initial fit and the
+        min-zoom clamp."""
+        return (self._canvas_w, int(self.canvas_h))
+
+    @property
     def _vp_current(self) -> Viewport:
         vp = self.viewport
         if vp is None:
@@ -205,6 +229,17 @@ class SlideViewer(widgets.DOMWidget):
             vp["cx"], vp["cy"], vp["zoom"],
             canvas_w=vp["canvas_w"], canvas_h=vp["canvas_h"],
         )
+
+    def _on_canvas_h_change(self, change: dict) -> None:
+        h = int(self.canvas_h)
+        if self._meta is not None:
+            self._min_zoom = fit_zoom(self._meta, self._canvas_w, h) / 4.0
+        if self.viewport is not None and self.viewport.get("canvas_h") != h:
+            # Re-base the shared viewport onto the new height. With a JS
+            # view attached, its ResizeObserver sends back the same size
+            # (deduped in _sendViewport); headless, this is what triggers
+            # the background re-render of the resized viewport.
+            self.viewport = dict(self.viewport, canvas_h=h)
 
     # ------------------------------------------------------ viewport handling
     def _set_viewport_sync(self, vp: Viewport) -> None:
@@ -437,6 +472,24 @@ class HtmlSlideViewer(widgets.Box):
         self.center_on(self.meta.dimensions[0] / 2.0, self.meta.dimensions[1] / 2.0)
 
     # ------------------------------------------------------------ public API
+    @property
+    def canvas_h(self) -> int:
+        """On-screen viewport height (CSS px); setting re-renders the composite."""
+        return self.viewport.canvas_h
+
+    @canvas_h.setter
+    def canvas_h(self, h: int) -> None:
+        h = int(h)
+        if h <= 0:
+            raise ValueError(f"canvas_h must be positive, got {h}")
+        if h == self.viewport.canvas_h:
+            return
+        self.viewport = replace(self.viewport, canvas_h=h)
+        self._min_zoom = fit_zoom(self.meta, self.viewport.canvas_w, h) / 4.0
+        if self.zoom_slider.value > self._min_zoom:
+            self.zoom_slider.min = self._min_zoom
+        self.render()
+
     def set_zoom(self, zoom: float, cx: float | None = None, cy: float | None = None) -> Viewport:
         """Set zoom (clamped), optionally moving the view center."""
         zoom = min(max(zoom, self._min_zoom), self._max_zoom)

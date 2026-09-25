@@ -143,6 +143,20 @@ def test_m0_html_adjacent_tiles_overlap(backend):
                 assert (t2 + h2) - t1 > 0.5
 
 
+def test_m0_canvas_h_renders_new_height(backend):
+    """M0: the canvas_h property re-renders the HTML composite at the
+    new viewport height."""
+    v = HtmlSlideViewer(SLIDE, canvas_w=960, canvas_h=540)
+    try:
+        assert v.canvas_h == 540
+        v.canvas_h = 800
+        assert v.canvas_h == 800
+        assert v.viewport.canvas_h == 800
+        assert "height:800px" in v.html.value
+    finally:
+        v.close()
+
+
 def test_tile_cache_is_viewport_invariant(backend):
     """A tile's image must depend only on (level, tx, ty) and the slide bounds,
     never on which viewport fetched it. (Previously the read rect's edges cut

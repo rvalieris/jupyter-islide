@@ -65,6 +65,9 @@ v.center_on(18691, 36611)   # level-0 slide coordinates
 v.set_zoom(2.0)
 v.viewport_bbox()           # current view in level-0 px
 v.read_crop(v.viewport_bbox())  # PIL image of the current view
+
+v.canvas_h = 900            # resize the viewport height (CSS px);
+                            # also a constructor arg: SlideViewer(path, canvas_h=900)
 ```
 
 The mouse does the rest: **scroll** zooms at the cursor, **drag** pans,

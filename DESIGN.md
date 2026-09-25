@@ -265,8 +265,14 @@ everything and Python can replay state after a kernel restart of the widget.
 
 Canvas is DPR-aware: backing store is `clientSize × devicePixelRatio`,
 drawing is in CSS pixels (`setTransform(dpr, 0, 0, dpr, 0, 0)`). Resizes go
-through a `ResizeObserver`, which updates the transform's canvas size and
-re-syncs.
+through a `ResizeObserver`, which updates the transform's canvas size,
+**redraws synchronously** (the RO callback runs after layout but before
+paint, so the frame that shows the new box is already drawn at the new size
+— deferring the draw one frame to `requestAnimationFrame` CSS-stretches the
+old backing store, which reads as squished tiles while JupyterLab animates
+the sidebar) and re-syncs. `_drawNow` additionally re-syncs the transform to
+the live canvas size if the RO has not caught up, so scene layout and
+backing store always share a size.
 
 ### 6.3 Annotations layer
 
@@ -316,6 +322,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `slide_open` | Py→JS | bool | false until open (or on error) |
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
+| `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
