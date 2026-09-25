@@ -21,4 +21,5 @@ export class SlideModel extends DOMWidgetModel {
       ...SLIDE_MODEL_DEFAULTS,
     };
   }
+
 }

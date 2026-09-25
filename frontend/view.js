@@ -33,13 +33,17 @@ export class SlideView extends DOMWidgetView {
     this._dragging = null;
     this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
 
-    this._buildDom();
-    this._bindModel();
-    this._bindEvents();
+    // Must exist before _buildDom(): that is where observe(this._canvas)
+    // happens, and only the RO keeps the transform (and hence the tile
+    // reprojection) in step when the container resizes (sidebar open/close,
+    // panel drags) between user interactions.
     this._resizeObserver =
       typeof ResizeObserver !== 'undefined'
         ? new ResizeObserver(() => this._onResize())
         : null;
+    this._buildDom();
+    this._bindModel();
+    this._bindEvents();
     this.displayed.then(() => {
       this._onResize();
       this._maybeSendInitialViewport();
@@ -91,6 +95,7 @@ export class SlideView extends DOMWidgetView {
   _bindModel() {
     this.listenTo(this.model, 'change:viewport', this._onViewportChange);
     this.listenTo(this.model, 'change:tiles', this._onTilesChange);
+    this.listenTo(this.model, 'change:tile_geo', this._onTileGeoChange);
     this.listenTo(this.model, 'change:meta', this._onMetaChange);
     this.listenTo(this.model, 'change:slide_open', this._onSlideOpen);
     this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
@@ -101,6 +106,13 @@ export class SlideView extends DOMWidgetView {
     this._onSlideOpen();
     this._onMinimapChange();
     this._onStatusChange();
+    // Seed the image cache from whatever tiles the model already holds:
+    // the kernel's initial render usually completes before this view is
+    // attached, so no change:tiles event fires for them. Without this the
+    // first draw renders empty (m:all) until the viewport happens to
+    // change the plan (a later push then merges), leaving the initial
+    // viewport blank.
+    this._mergeTiles();
   }
 
   _onViewportChange() {
@@ -116,6 +128,10 @@ export class SlideView extends DOMWidgetView {
 
   _onTilesChange() {
     this._mergeTiles();
+    this._requestDraw();
+  }
+
+  _onTileGeoChange() {
     this._requestDraw();
   }
 
@@ -160,12 +176,15 @@ export class SlideView extends DOMWidgetView {
         img._ready = true;
         this._requestDraw();
       };
+      img.onerror = () => {
+        console.error('[islide] tile image FAILED to decode', key);
+        this._requestDraw();
+      };
       img.src = url;
       this._images.set(key, img);
     }
     while (this._images.size > MAX_CACHED_IMAGES) {
-      const first = this._images.keys().next().value;
-      this._images.delete(first);
+      this._images.delete(this._images.keys().next().value);
     }
   }
 
