@@ -4,6 +4,15 @@
   font-family: var(--jp-ui-font-family, sans-serif);
 }
 
+/* Neither the JupyterLab themes nor the ipywidgets base CSS normalize
+   box-sizing, so the default content-box sizing makes the canvas wrap's
+   1px border add 2px to its 100% width, overflowing the cell output area
+   and forcing a horizontal scrollbar. Make the subtree predictable. */
+.islide-view,
+.islide-view * {
+  box-sizing: border-box;
+}
+
 .islide-canvas-wrap {
   position: relative;
   width: 100%;

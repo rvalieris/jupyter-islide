@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jupyter-islide"
-version = "0.2.3"
+version = "0.2.4"
 description = "Interactive whole-slide pathology image viewer for Jupyter, backed by OpenSlide"
 readme = "README.md"
 requires-python = ">=3.10"
