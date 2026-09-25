@@ -202,7 +202,8 @@ frontend/
   tilemath.js    pure math: fitZoom, zoomAtCursor, panTransform,
                  tileScreenRect, visibleTiles, viewportL0Bbox, …
   compositor.js  drawScene(ctx, {transform, meta, tileGeo, images}) —
-                 the only place pixels are drawn; pure over a ctx
+                 the only place tile pixels are drawn; pure over a ctx
+  annotations.js drawAnnotations(ctx, {transform, shapes}) — M2 overlay
   model.js       SlideModel extends DOMWidgetModel (defaults only)
   view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap)
   defaults.js    SLIDE_MODEL_DEFAULTS — the trait names shared with Python
@@ -240,8 +241,8 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 | double-click | zoom in ×2 at cursor | M1 ✅ |
 | minimap click/drag | center viewport on that point | M1 ✅ |
 | toolbar | −/+, fit slide, 1:1 | M1 ✅ |
-| right-drag or shift+drag | rubber-band region select (Python callback with slide-coord rect) | M2 |
-| click | point callback (slide coords) | M2 |
+| right-drag or shift+drag | rubber-band region select (Python callback with slide-coord rect) | M3 |
+| click | point callback (slide coords) | M3 |
 
 All of these mutate the **viewport trait** — the *only* JS→Python channel
 for navigation. The wire form is
@@ -260,7 +261,7 @@ decoded tile images (insertion-order LRU, 400 entries) so back-pans are
 canvas-only.
 
 Click/region callbacks are also trait updates (`last_click`,
-`last_region` — reserved now, wired in M2), so the same round-trip covers
+`last_region` — reserved now, wired in M3), so the same round-trip covers
 everything and Python can replay state after a kernel restart of the widget.
 
 Canvas is DPR-aware: backing store is `clientSize × devicePixelRatio`,
@@ -274,15 +275,103 @@ the sidebar) and re-syncs. `_drawNow` additionally re-syncs the transform to
 the live canvas size if the RO has not caught up, so scene layout and
 backing store always share a size.
 
-### 6.3 Annotations layer
+### 6.3 Annotations layer (M2: read-only import + overlay)
 
-- Shape model (Python-owned, synced in both directions):
-  `{id, kind: point|rect|polygon, points: [(x,y), …], label, color}` in
-  slide coordinates.
-- Rendered as a canvas overlay; on viewport change the JS re-draws from the
-  synced shapes list (cheap: N strokes). No annotation edits in v1 except
-  adding a point on click (toggle "annotate" mode).
-- Import in v1: GeoJSON (point/polygon) — the de-facto WSI annotation format.
+M2 is **read-only**: annotations enter as a GeoJSON document from Python
+and are rendered on a canvas overlay. No creating, editing, or deleting
+annotations in the UI (the v1 non-goal stands); the interactive pieces —
+click-to-add point and rubber-band region select — move to M3.
+
+**Import: GeoJSON, in level-0 `px` (default) or `um`**
+(`islide/annotations.py`, pure over a parsed document + mpp — same
+style as `plan.py`):
+
+- Accepted documents: a `FeatureCollection`, a single `Feature`, or a
+  bare geometry object (no properties).
+- Geometries: `Point` / `MultiPoint` → `point`, `LineString` → `line`,
+  `Polygon` / `MultiPolygon` → `polygon`, `GeometryCollection` (recursed).
+- Feature `properties` (all optional, else defaults): `color` (CSS
+  stroke/outline color, default **black**), `fill` (CSS interior fill
+  color, default **transparent** — polygons are outline-only unless a
+  fill is given; an `rgba()` string gives a translucent fill), and
+  `label` (string; drawn next to points).
+- Coordinates: GeoJSON numbers are local coordinates from the slide
+  origin, **y down** (slide orientation; no CRS handling). Two unit
+  conventions, chosen at import:
+  - `units="px"` (default): coordinates are already level-0 px.
+  - `units="um"`: microns from the origin; converted to level-0 px via
+    the slide's mpp (`px = um / mpp`, one mpp for both axes — WSIs are
+    isotropic to within rounding). Physical, vendor-agnostic
+    convention: a re-scan of the same tissue keeps its annotations.
+    Requires mpp (`ValueError` otherwise).
+- Validation: strict at the document level (bad structure → `ValueError`);
+  per feature, non-finite coordinates → `ValueError`, degenerate geometry
+  (empty ring, zero area) → skipped with a warning. Coordinates outside
+  the slide are legal; drawing clips them.
+
+**Shape model** (Python-owned, Py→JS sync — M2's only direction):
+`{id, kind, points, label, color, fill}` in level-0 px, where `points` is:
+- `point`: `[[x, y]]` — a single position;
+- `line`: `[[x, y], [x, y], …]` — an open position list;
+- `polygon`: a *list of rings* (outer ring first, holes after), each ring
+  `[[x, y], …]`, stored **open** — a redundant closing position is stripped
+  at import and the renderer closes each ring when tracing, so the outline
+  covers the last→first segment. Holes are punched with an evenodd fill.
+
+`label`, `color`, `fill` are `null` when the feature gave none (JSON `null`
+over the wire). `null` means *"use the default"*, not *"none"*: `color`
+defaults to black, `fill` to transparent, `label` to no label — so the
+renderer treats `null` and absence identically. (`kind: "rect"` is deferred
+to M3 with the region select that produces it.)
+
+**Wire:** new trait `annotations` (Py→JS, list). The *entire* normalized
+set is sent once at import — deliberately **not** filtered by viewport in
+Python: the JS local transform is the authoritative viewport at frame time
+and Python's copy is ≥120 ms stale, so viewport-filtered pushes would make
+shapes pop in on every pan (the lag the tile re-projection design avoids,
+here for data that costs nothing to send). Culling is per-frame in JS
+(bbox ∩ current transform). The only pre-send filters are the
+viewport-independent import-time ones: validation errors, degenerate-shape
+skip, unit conversion. Because it is a synced trait, the overlay rebuilds
+after a kernel restart just like the tiles.
+
+**Rendering** (second `#annotations` canvas, §6.1; same size/DPR as the
+image canvas, drawn after the tiles):
+
+- **Culling:** shapes whose bbox does not intersect the current viewport
+  are not rendered (checked per frame against the local transform).
+- Screen-constant styling (does **not** scale with zoom): polygons with
+  a 1.5 px stroke (`color`, default black) and interior `fill` (default
+  transparent); lines at 1.5 px in `color`; points as filled circles of
+  ~4 px radius (body: `fill` if given, else `color`) with a white halo
+  for contrast on tissue.
+- **Alpha:** a toolbar slider (0–1, default 1) sets the overlay's
+  `globalAlpha`, fading the whole annotation layer. View-local display
+  state, not a trait (resets on restart, like the local transform).
+- Labels: 12 px screen-space text next to the point, only when `label`
+  is set.
+- Pure module `frontend/annotations.js`
+  (`drawAnnotations(ctx, {transform, shapes, alpha})`), unit-tested
+  against a mock ctx like the compositor.
+
+**Python API:**
+
+```python
+v.set_annotations("roi.geojson")     # str / Path, or a parsed dict
+v.set_annotations(doc, units="um")   # coordinates in microns (requires mpp)
+v.clear_annotations()
+v.annotations      # the normalized shape list (level-0 px)
+```
+
+`set_annotations` replaces the current set and waits for the slide if
+needed (the `um` conversion requires mpp).
+
+**Not in M2** (explicit): any UI editing (no add-on-click, drag, edit,
+or delete); `last_click`/`last_region` wiring and `on_click`/`on_region`
+callbacks (M3 — the reserved traits stay in the contract, unwired);
+annotation hit-testing, hover, and tooltips; per-feature visibility;
+annotation export (the GeoJSON file is the source of truth);
+`HtmlSlideViewer` annotations (canvas view only, M0 fallback untouched).
 
 ## 7. Python API
 
@@ -302,10 +391,13 @@ bbox = v.viewport_bbox()       # (x0, y0, x1, y1) in slide coords, clamped
 # data out
 img = v.read_crop(bbox)        # PIL Image at level 0 (RGBA)
 
-# M2 (reserved): event hooks, annotations
+# annotations (M2, read-only)
+v.set_annotations("roi.geojson")   # level-0 px (default); units="um" for microns (needs mpp)
+v.clear_annotations()
+
+# M3 (reserved): event hooks
 # v.on_click.connect(lambda p: print("clicked", p))
 # v.on_region.connect(lambda rect: v.read_crop(rect))
-# v.set_annotations(geojson="roi.geojson")
 
 v.close()                      # joins open thread, closes the slide handle
 ```
@@ -326,7 +418,8 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
-| `last_click` / `last_region` | JS→Py | dict | reserved for M2 callbacks |
+| `annotations` | Py→JS | list | normalized shapes in level-0 px (`{id, kind, points, label, color}`), M2, read-only |
+| `last_click` / `last_region` | JS→Py | dict | reserved for M3 (interaction) callbacks |
 | `status` | Py→JS | str | status line (open progress / error / live zoom·level·tile info) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
@@ -403,8 +496,9 @@ fetch pass.
 |---|---|---|
 | M0 ✅ | **Spike: static pipeline** *(done)*. Viewport state in Python, toolbar/sliders (ipywidgets buttons + a zoom `FloatLogSlider`) drive rendering; tiles pushed to an `HTML` widget as stacked `<img>` tags. No mouse. Proves: openslide plumbing, level selection, one-read-per-viewport, JPEG over comm, cache. Implementation notes: the slide opens **synchronously** in `__init__` (local opens were measured at ~0 s; background open comes with the M1 JS view's loading state), and the HTML compositor lives in `widget.py` only — `plan`/`fetch`/`cache`/`encode` are final-shape. | `examples/m0_demo.ipynb` + zoom buttons |
 | M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor + headless widget tests; the extension build path is documented, see §11), and the M2 mouse callbacks. | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
-| M2 | **Annotations.** Canvas overlay layer, GeoJSON import, click-to-add point, `last_region` rubber-band select, callbacks. | `v.on_region` + GeoJSON overlay example |
-| M3 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
+| M2 | **Read-only annotations.** GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing; no click/region-select interaction (M3). | `examples/m2_demo.ipynb`: `v.set_annotations("roi.geojson")` + smooth pan/zoom over the overlay |
+| M3 | **Interaction.** Wire the reserved `last_click` / `last_region` traits, `on_click` / `on_region` callbacks; optional click-to-add point ("annotate" mode). | `v.on_region` + live region export example |
+| M4 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 ## 11. Testing
 
@@ -430,6 +524,18 @@ fetch pass.
   `set_zoom`/`center_on`/`viewport_bbox`/`read_crop`, zoom clamping,
   JS-originated viewport trait change → background render, open-failure
   error path, `close()` idempotence.
+- **M2 annotation tests:** pure parser unit tests (`tests/test_annotations.py`,
+  no OpenSlide): FeatureCollection/Feature/bare-geometry documents, Multi* +
+  GeometryCollection, um→px conversion at a fixed mpp, properties (label/
+  color/defaults), `units="px"`, error paths (um without mpp, malformed
+  document), degenerate-feature skip with warning. Headless widget
+  (`tests/test_widget_m2.py`): `set_annotations`/`clear_annotations` →
+  `annotations` trait shape and level-0 values, replace semantics,
+  wait-for-open. JS (`frontend/test/annotations.test.js`): `drawAnnotations`
+  against a mock ctx — culling, per-kind draw calls, screen-constant widths,
+  `color`/`fill` defaults (black/transparent), alpha (`globalAlpha`),
+  label rendering. Trait contract: `annotations` added to `defaults.js`,
+  covered by the existing cross-language name guard.
 - **Cross-language contract test:** the Python synced trait names are
   asserted to equal the keys in `frontend/defaults.js` (both directions of
   the same guard), so the comm contract can't drift.
@@ -455,6 +561,7 @@ islide/
 │   ├── widget.py             # M1 DOMWidget + M0 HTML viewer + state machine
 │   ├── backend.py            # SlideBackend protocol, OpenSlideBackend
 │   ├── plan.py               # viewport -> read plan (pure)
+│   ├── annotations.py        # GeoJSON -> normalized shapes (pure, M2)
 │   ├── viewport.py           # SlideMeta + Viewport (pure)
 │   ├── cache.py              # TileCache
 │   ├── fetch.py              # plan -> tiles (cache + one read, cropped)
@@ -511,3 +618,8 @@ standard JupyterLab 4 labextensions discovery path. So:
 7. **License & example slides** — need 2–3 small example WSI that are OK to
    redistribute for docs/tests (candidates: generated synthetic pyramid once
    §11's recipe is pinned, plus one small real SVS under an open license).
+8. **Milestone split** — M2 = read-only GeoJSON import only (per the M2
+   scope decision); M3 = click/region-select interaction + optional
+   annotate mode (from the old M2 row); M4 = polish & ship (was M3).
+   The reserved `last_click`/`last_region` traits stay in the contract
+   unwired until M3. *Proposed, confirm.*

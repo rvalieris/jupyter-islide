@@ -25,6 +25,29 @@
   cursor: grabbing;
 }
 
+/* M2 annotation overlay: sits over the image canvas (below the minimap),
+   never takes mouse input. */
+.islide-annotations {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.islide-alpha {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 0.9em;
+}
+
+.islide-alpha-input {
+  width: 90px;
+}
+
 .islide-minimap {
   position: absolute;
   top: 8px;

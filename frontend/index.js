@@ -8,4 +8,5 @@ export { SlideModel } from './model.js';
 export { SlideView } from './view.js';
 export * from './tilemath.js';
 export { drawScene } from './compositor.js';
+export { drawAnnotations } from './annotations.js';
 export { SLIDE_MODEL_DEFAULTS, ISLIDE_MODULE_VERSION } from './defaults.js';

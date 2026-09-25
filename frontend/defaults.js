@@ -14,6 +14,7 @@ export const SLIDE_MODEL_DEFAULTS = {
   minimap_img: '',
   last_click: {},
   last_region: {},
+  annotations: [],
   status: '',
 };
 

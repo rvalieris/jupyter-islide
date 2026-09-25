@@ -20,13 +20,16 @@ Both share the identical pipeline: ``plan_viewport`` -> ``fetch_tiles`` ->
 """
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
-from traitlets import Bool, Dict, Int, TraitError, Unicode, validate
+from traitlets import Bool, Dict, Int, List, TraitError, Unicode, validate
 
+from .annotations import parse_annotations
 from .backend import OpenSlideBackend
 from .cache import TileCache
 from .encode import jpeg_data_url
@@ -110,6 +113,9 @@ class SlideViewer(widgets.DOMWidget):
     minimap_img = Unicode("").tag(sync=True)  # whole-slide overview data URL
     last_click = Dict({}).tag(sync=True)  # {"x": .., "y": ..} level-0 px
     last_region = Dict({}).tag(sync=True)  # {"x": .., "y": .., "w": .., "h": ..}
+    # M2: normalized annotation shapes in level-0 px (Py->JS; the JS view
+    # renders them read-only on an overlay canvas; DESIGN.md §6.3).
+    annotations = List([]).tag(sync=True)
     status = Unicode("").tag(sync=True)
 
     def __init__(
@@ -358,6 +364,42 @@ class SlideViewer(widgets.DOMWidget):
             raise ValueError(f"empty crop bbox: {bbox}")
         assert self.backend is not None
         return self.backend.read_region((x0, y0), level, (x1 - x0, y1 - y0))
+
+    # ------------------------------------------------- M2: read-only annotations
+    def set_annotations(
+        self, source: str | Path | dict, units: str = "px"
+    ) -> list[dict]:
+        """Import a GeoJSON annotation document (replaces the current set).
+
+        ``source`` is a GeoJSON file path or an already-parsed document
+        (dict). ``units``: ``"px"`` (default) treats the document's
+        coordinates as level-0 slide px; ``"um"`` treats them as microns
+        from the slide origin and converts them with the slide's mpp
+        (waits for the slide to open, and raises ``ValueError`` if the
+        slide has no mpp). Returns the normalized shape list, also stored
+        on the synced ``annotations`` trait; the JS view renders it
+        read-only.
+        """
+        if isinstance(source, (str, Path)):
+            doc: dict = json.loads(Path(source).read_text())
+        else:
+            doc = source
+        mpp: float | None = None
+        if units == "um":
+            self.wait()
+            meta = self._meta
+            mpp = meta.mpp if meta is not None else None
+            if mpp is None:
+                raise ValueError(
+                    "units='um' requires the slide's mpp; this slide has none"
+                )
+        shapes = parse_annotations(doc, units=units, mpp=mpp)
+        self.annotations = shapes
+        return shapes
+
+    def clear_annotations(self) -> None:
+        """Remove all annotations (the JS overlay clears)."""
+        self.annotations = []
 
 
 # ---------------------------------------------------------------------------

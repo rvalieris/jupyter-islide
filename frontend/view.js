@@ -14,6 +14,7 @@
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
 import { drawScene } from './compositor.js';
+import { drawAnnotations } from './annotations.js';
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
@@ -30,6 +31,7 @@ export class SlideView extends DOMWidgetView {
     this._syncTimer = null;
     this._drawQueued = false;
     this._dragging = null;
+    this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
 
     this._buildDom();
     this._bindModel();
@@ -51,6 +53,7 @@ export class SlideView extends DOMWidgetView {
     this.el.innerHTML = `
       <div class="islide-canvas-wrap">
         <canvas class="islide-canvas"></canvas>
+        <canvas class="islide-annotations"></canvas>
         <div class="islide-minimap">
           <img class="islide-minimap-img" alt="minimap"/>
           <canvas class="islide-minimap-rect"></canvas>
@@ -61,11 +64,18 @@ export class SlideView extends DOMWidgetView {
         <button class="islide-btn" data-action="zoom-in">+</button>
         <button class="islide-btn" data-action="fit">fit</button>
         <button class="islide-btn" data-action="1:1">1:1</button>
+        <label class="islide-alpha" title="annotation opacity">
+          <span class="islide-alpha-label">α</span>
+          <input class="islide-alpha-input" type="range" min="0" max="1"
+                 step="0.05" value="1"/>
+        </label>
         <span class="islide-readout"></span>
         <span class="islide-status"></span>
       </div>`;
     this._canvasWrap = this.el.querySelector('.islide-canvas-wrap');
     this._canvas = this.el.querySelector('.islide-canvas');
+    this._annotCanvas = this.el.querySelector('.islide-annotations');
+    this._alphaInput = this.el.querySelector('.islide-alpha-input');
     this._minimapWrap = this.el.querySelector('.islide-minimap');
     this._minimapImg = this.el.querySelector('.islide-minimap-img');
     this._minimapRect = this.el.querySelector('.islide-minimap-rect');
@@ -86,6 +96,7 @@ export class SlideView extends DOMWidgetView {
     this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
     this.listenTo(this.model, 'change:status', this._onStatusChange);
     this.listenTo(this.model, 'change:canvas_h', this._applyCanvasHeight);
+    this.listenTo(this.model, 'change:annotations', this._requestDraw);
     this._onMetaChange();
     this._onSlideOpen();
     this._onMinimapChange();
@@ -273,6 +284,12 @@ export class SlideView extends DOMWidgetView {
       this._toolbarAction(btn.dataset.action);
     });
 
+    // View-local annotation opacity (not synced; display state only).
+    this._alphaInput.addEventListener('input', () => {
+      this._annotAlpha = Number(this._alphaInput.value);
+      this._requestDraw();
+    });
+
     // Minimap: click/drag to move the view center.
     const mini = this._minimapWrap;
     mini.addEventListener('pointerdown', (e) => {
@@ -376,8 +393,29 @@ export class SlideView extends DOMWidgetView {
       tileGeo: this.model.get('tile_geo'),
       images: this._images,
     });
+    this._drawAnnotations();
     this._drawMinimapViewport();
     this._updateReadout();
+  }
+
+  /** M2: overlay pass — read-only annotation shapes, reprojected each frame. */
+  _drawAnnotations() {
+    const t = this._transform;
+    const dpr = window.devicePixelRatio || 1;
+    const w = this._canvas.clientWidth;
+    const h = this._canvas.clientHeight;
+    if (!w || !h) return;
+    const c = this._annotCanvas;
+    if (c.width !== Math.round(w * dpr)) c.width = Math.round(w * dpr);
+    if (c.height !== Math.round(h * dpr)) c.height = Math.round(h * dpr);
+    const actx = c.getContext('2d');
+    actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    actx.clearRect(0, 0, w, h);
+    drawAnnotations(actx, {
+      transform: t,
+      shapes: this.model.get('annotations') || [],
+      alpha: this._annotAlpha,
+    });
   }
 
   _layoutMinimap() {
