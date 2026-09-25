@@ -2,6 +2,7 @@
 requires = [
     "hatchling",
     "jupyterlab==4.*",
+    "jupyter-builder>=1.0.2",
 ]
 build-backend = "hatchling.build"
 
