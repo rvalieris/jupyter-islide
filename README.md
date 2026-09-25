@@ -3,10 +3,11 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M1** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
-(mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline. A
-pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is kept as the no-extension
-fallback and as the reference pipeline.
+Status: **M2** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
+(mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline, with a
+read-only GeoJSON annotation overlay (points, lines, polygons — level-0 px
+or microns). A pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is kept as
+the no-extension fallback and as the reference pipeline.
 
 ## Install
 
@@ -70,6 +71,19 @@ v.canvas_h = 900            # resize the viewport height (CSS px);
                             # also a constructor arg: SlideViewer(path, canvas_h=900)
 ```
 
+**Annotations (M2, read-only).** Import a GeoJSON document — a file path or
+a parsed dict (`FeatureCollection`, `Feature`, or bare geometry). Shapes
+render on an overlay canvas with per-feature `color`/`fill`/`label`
+properties and a toolbar alpha slider; coordinates are level-0 px by
+default or microns (`units="um"`, requires the slide's mpp):
+
+```python
+v.set_annotations("roi.geojson")
+v.set_annotations(doc, units="um")
+v.annotations      # normalized shape list (level-0 px)
+v.clear_annotations()
+```
+
 **Custom slide types.** If your slide library exposes the same API as
 openslide (openslide-python's object-oriented API), pass an already-opened
 slide object instead of a path — exactly one of the two:
@@ -94,8 +108,8 @@ v = HtmlSlideViewer("data/testslide.tiff")
 display(v)
 ```
 
-Run `examples/m1_demo.ipynb` (canvas) or `examples/m0_demo.ipynb` (HTML)
-for a walkthrough.
+Run `examples/m2_demo.ipynb` (annotations), `examples/m1_demo.ipynb`
+(canvas), or `examples/m0_demo.ipynb` (HTML) for a walkthrough.
 
 ## Layout
 
@@ -103,6 +117,7 @@ for a walkthrough.
 islide/
   viewport.py  SlideMeta + Viewport (pure)
   plan.py      viewport -> one region read, sliced into tiles (pure)
+  annotations.py  GeoJSON document -> normalized shapes (pure)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read, cropped)
@@ -112,6 +127,7 @@ islide/
 frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   tilemath.js     pure viewport/tile math
   compositor.js  pure canvas scene drawing
+  annotations.js pure annotation overlay drawing (M2)
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)
   labextension.js  widget-registry registration
