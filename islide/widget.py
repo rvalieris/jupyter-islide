@@ -30,7 +30,7 @@ import ipywidgets as widgets
 from traitlets import Bool, Dict, Int, List, TraitError, Unicode, validate
 
 from .annotations import parse_annotations
-from .backend import OpenSlideBackend
+from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
 from .encode import jpeg_data_url
 from .fetch import fetch_tiles
@@ -66,8 +66,31 @@ def _vp_dict(vp: Viewport) -> dict:
     }
 
 
+def _require_slide_source(path: str | None, slide: Any | None) -> tuple[Any | None, str]:
+    """Validate the two ways a slide is provided: a file ``path`` or an
+    already-opened, openslide-compatible ``slide`` object (exactly one).
+
+    Returns ``(slide_or_None, path)``; ``path`` is display-only (it may come
+    from the slide object itself).
+    """
+    if path is None and slide is None:
+        raise ValueError(
+            "provide a slide path or an opened, openslide-compatible slide object"
+        )
+    if path is not None and slide is not None:
+        raise ValueError("provide either a slide path or an opened slide object, not both")
+    if slide is not None:
+        return slide, _object_path(slide)
+    return None, str(path)
+
+
 class SlideViewer(widgets.DOMWidget):
     """Interactive WSI viewer (M1): canvas compositor, Python-driven tiles.
+
+    Construct with a file path (``SlideViewer(path)``) or, for slide
+    libraries that mirror openslide's API over other slide types, with an
+    already-opened slide object (``SlideViewer(slide=obj)``) — exactly one
+    of the two.
 
     * Slide opening runs on a background thread; ``slide_open`` flips to
       ``True`` when ready (or ``status`` carries the error message).
@@ -120,14 +143,19 @@ class SlideViewer(widgets.DOMWidget):
 
     def __init__(
         self,
-        path: str,
+        path: str | None = None,
         canvas_w: int = 960,
         canvas_h: int = 540,
         tile_size: int = 256,
         cache_max_mb: int = 256,
+        *,
+        slide: Any | None = None,
     ) -> None:
+        """Create a viewer from a file path, or from an already-opened
+        openslide-compatible object (``slide=``; exactly one of the two)."""
         super().__init__()
-        self.path = str(path)
+        slide_obj, self.path = _require_slide_source(path, slide)
+        self._initial_slide = slide_obj
         self._canvas_w = int(canvas_w)
         self.canvas_h = int(canvas_h)
         self.tile_size = int(tile_size)
@@ -153,7 +181,10 @@ class SlideViewer(widgets.DOMWidget):
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
         try:
-            backend = OpenSlideBackend(self.path)
+            if self._initial_slide is not None:
+                backend = OpenSlideBackend.from_object(self._initial_slide)
+            else:
+                backend = OpenSlideBackend(self.path)
         except Exception as e:  # noqa: BLE001 - report via `status`
             self._open_error = e
             self.status = f"error opening slide: {e}"
@@ -419,6 +450,10 @@ _SEAM_MARGIN_PX = 0.5
 class HtmlSlideViewer(widgets.Box):
     """Toolbar/slider-driven WSI viewer without custom JS (M0).
 
+    Construct with a file path or an already-opened, openslide-compatible
+    slide object (``slide=``) — exactly one of the two, as with
+    :class:`SlideViewer`.
+
     The display is an HTML composite of absolutely-positioned ``<img>``
     tiles; it works in any ipywidgets 8 environment (no JupyterLab
     extension needed) at the cost of no mouse input. Tiles are drawn
@@ -428,14 +463,22 @@ class HtmlSlideViewer(widgets.Box):
 
     def __init__(
         self,
-        path: str,
+        path: str | None = None,
         canvas_w: int = 960,
         canvas_h: int = 540,
         tile_size: int = 256,
         cache_max_mb: int = 256,
+        *,
+        slide: Any | None = None,
     ) -> None:
+        """Create a viewer from a file path, or from an already-opened
+        openslide-compatible object (``slide=``; exactly one of the two)."""
         super().__init__()
-        self.backend = OpenSlideBackend(path)
+        slide_obj, path = _require_slide_source(path, slide)
+        if slide_obj is not None:
+            self.backend = OpenSlideBackend.from_object(slide_obj)
+        else:
+            self.backend = OpenSlideBackend(path)
         self.meta = self.backend.meta
         self.cache = TileCache(int(cache_max_mb * 1024 * 1024))
         self.tile_size = tile_size

@@ -440,6 +440,14 @@ class SlideBackend(Protocol):
 `HTTPBackend` (openslide-server) or `S3Backend` slots in without touching the
 widget.
 
+`OpenSlideBackend.from_object(slide)` wraps an *already-opened* object that
+duck-types the openslide OO API surface (`properties`, `dimensions`,
+`level_count`, `level_downsamples`, `level_dimensions`, `read_region`,
+`get_thumbnail`, `close`) — the seam for custom slide libraries that mirror
+openslide's API over other slide types (no `openslide` import needed; the
+backend closes the wrapped object). Both viewers expose it as a keyword-only
+`slide=` constructor argument, mutually exclusive with the path.
+
 ## 8. Verified OpenSlide / openslide-python API notes
 
 Environment checked during design (openslide-python 1.4.6, libopenslide 4.0.1):

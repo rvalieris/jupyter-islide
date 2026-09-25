@@ -93,6 +93,27 @@ def test_background_open_and_wait(viewer):
     assert "×" in viewer.status and "tiles" in viewer.status
 
 
+def test_slide_kwarg_accepts_opened_openslide_object():
+    """A pre-opened openslide object (e.g. from a same-API custom lib)
+    can be passed instead of a path; the viewer closes it on close()."""
+    import openslide
+
+    os_slide = openslide.open_slide(SLIDE)
+    v = SlideViewer(slide=os_slide)
+    try:
+        v.wait()
+        assert v.slide_open
+        assert v.path == SLIDE  # best-effort path lifted from the object
+        assert v.meta["dimensions"] == [37382, 73222]
+        assert len(v.render().tiles) > 0
+    finally:
+        v.close()
+    # the backend closed the passed-in object
+    with pytest.raises(Exception) as err:
+        os_slide.read_region((0, 0), 0, (8, 8))
+    assert "closed" in str(err.value)
+
+
 def test_meta_trait_shape(viewer):
     viewer.wait()
     meta = viewer.meta

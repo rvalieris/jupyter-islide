@@ -70,6 +70,17 @@ v.canvas_h = 900            # resize the viewport height (CSS px);
                             # also a constructor arg: SlideViewer(path, canvas_h=900)
 ```
 
+**Custom slide types.** If your slide library exposes the same API as
+openslide (openslide-python's object-oriented API), pass an already-opened
+slide object instead of a path — exactly one of the two:
+
+```python
+v = SlideViewer(slide=my_library.open_slide("my/other/slide.type"))
+```
+
+`HtmlSlideViewer` accepts the same `slide=` argument. The viewer takes
+ownership of the object and closes it on `close()`.
+
 The mouse does the rest: **scroll** zooms at the cursor, **drag** pans,
 **double-click** zooms in, and the **minimap** jumps the view. Pan/zoom is
 applied instantly in the view (a local transform) and the new viewport is

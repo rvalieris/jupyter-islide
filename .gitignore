@@ -1,6 +1,7 @@
 data
 **/.ipynb_checkpoints
 **/__pycache__
+dist
 
 # frontend (JS) build artifacts + node deps
 frontend/node_modules/

@@ -2,7 +2,10 @@
 
 ``SlideMeta`` lives in :mod:`islide.viewport` (pure); this module provides
 :class:`OpenSlideBackend`, the local-file backend over openslide-python's
-object-oriented API (``openslide.open_slide``).
+object-oriented API (``openslide.open_slide``). It can also wrap an
+*already-opened* slide object that speaks the same OO API
+(:meth:`OpenSlideBackend.from_object`) — the seam for slide libraries that
+mirror openslide's API over different slide types.
 
 The ``SlideBackend`` interface is the seam for future remote backends
 (openslide-server HTTP, S3, ...) — see DESIGN.md §7.1.
@@ -43,14 +46,66 @@ def _parse_mpp(props: dict[str, str]) -> float | None:
     return v if v > 0 else None
 
 
+def _object_path(slide) -> str:
+    """Best-effort file path of an already-opened slide object (display only)."""
+    p = getattr(slide, "path", None)
+    if p is None:
+        p = getattr(slide, "_filename", None)  # openslide-python OO objects
+    return str(p or "")
+
+
 class OpenSlideBackend:
-    """Local WSI file backed by libopenslide (via openslide-python >= 1.4)."""
+    """WSI backed by an openslide object (openslide-python >= 1.4 OO API).
+
+    Construct with a path (``OpenSlideBackend(path)`` — opened via
+    ``openslide.open_slide``) or wrap an already-opened, openslide-compatible
+    object with :meth:`from_object`.
+    """
+
+    #: Attributes an object must expose to be wrappable via ``from_object``
+    #: (the openslide OO API surface islide uses — duck-typed, so any
+    #: slide library mirroring that API works).
+    REQUIRED_ATTRS = (
+        "properties",
+        "dimensions",
+        "level_count",
+        "level_downsamples",
+        "level_dimensions",
+        "read_region",
+        "get_thumbnail",
+        "close",
+    )
 
     def __init__(self, path: str):
         import openslide  # imported here so pure modules stay import-light
 
         self.path = str(path)
         self._os = openslide.open_slide(self.path)
+        self._init_meta()
+
+    @classmethod
+    def from_object(cls, slide) -> "OpenSlideBackend":
+        """Wrap an already-opened, openslide-compatible slide object.
+
+        ``slide`` is duck-typed: it must expose the openslide OO API surface
+        islide uses (see :attr:`REQUIRED_ATTRS`). This is the seam for custom
+        slide libraries that mirror openslide's API but back different slide
+        types — ``openslide`` is never imported for a wrapped object, and
+        :meth:`close` closes the wrapped object.
+        """
+        missing = [a for a in cls.REQUIRED_ATTRS if not hasattr(slide, a)]
+        if missing:
+            raise TypeError(
+                "not an openslide-compatible slide object "
+                f"(missing attributes: {', '.join(missing)}): {slide!r}"
+            )
+        self = cls.__new__(cls)
+        self.path = _object_path(slide)
+        self._os = slide
+        self._init_meta()
+        return self
+
+    def _init_meta(self) -> None:
         props = dict(self._os.properties)
         self.meta = SlideMeta(
             dimensions=tuple(self._os.dimensions),
