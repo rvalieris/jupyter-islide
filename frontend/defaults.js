@@ -13,8 +13,10 @@ export const SLIDE_MODEL_DEFAULTS = {
   tile_geo: {},
   minimap_img: '',
   last_polygon: null,
-  annotations: [],
+  // M3.5: the canonical annotation document (a GeoJSON FeatureCollection
+  // in level-0 px; DESIGN.md §6.3). Rendered read-only by the JS view.
+  annotations: { type: 'FeatureCollection', features: [] },
   status: '',
 };
 
-export const ISLIDE_MODULE_VERSION = '1.0.0';
+export const ISLIDE_MODULE_VERSION = '2.0.0';

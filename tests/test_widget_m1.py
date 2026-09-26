@@ -61,8 +61,8 @@ def test_widget_identity_matches_frontend():
     assert cls._view_name.default() == "SlideView"
     assert cls._model_module.default() == "jupyter-islide"
     assert cls._view_module.default() == "jupyter-islide"
-    assert cls._model_module_version.default() == "1.0.0"
-    assert cls._view_module_version.default() == "1.0.0"
+    assert cls._model_module_version.default() == "2.0.0"
+    assert cls._view_module_version.default() == "2.0.0"
     # every synced identity/data trait has the sync tag
     for name, trait in vars(cls).items():
         if isinstance(trait, TraitType):

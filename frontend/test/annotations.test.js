@@ -1,5 +1,9 @@
 /**
  * Annotation overlay tests with a mock canvas 2D context (node --test).
+ *
+ * M3.5: the overlay consumes the canonical annotation document (a GeoJSON
+ * FeatureCollection of {id, geometry, properties} features, DESIGN.md
+ * §6.3), not a flat shape list.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,35 +46,42 @@ function mockCtx() {
 const T = { cx: 0, cy: 0, zoom: 1, canvasW: 512, canvasH: 512 };
 // visible level-0 x/y range: [-256, 256]
 
-const pt = (x, y, extra = {}) => ({
-  id: 'p', kind: 'point', points: [[x, y]],
-  label: null, color: null, fill: null, ...extra,
+const feat = (geometry, properties = {}, id = 'f') => ({
+  type: 'Feature', id, geometry, properties,
 });
-const line = (points, extra = {}) => ({
-  id: 'l', kind: 'line', points, label: null, color: null, fill: null, ...extra,
-});
-const poly = (points, extra = {}) => ({
-  id: 'g', kind: 'polygon', points, label: null, color: null, fill: null, ...extra,
-});
+const doc = (...features) => ({ type: 'FeatureCollection', features: [...features] });
+const point = (x, y) => ({ type: 'Point', coordinates: [x, y] });
 
 const arcs = (ctx) => ctx.ops.filter(([m]) => m === 'arc');
 
-test('no shapes: nothing is drawn', () => {
+test('no features: nothing is drawn', () => {
   const ctx = mockCtx();
-  assert.equal(drawAnnotations(ctx, { transform: T, shapes: [] }), 0);
+  assert.equal(
+    drawAnnotations(ctx, { transform: T, annotations: doc() }), 0);
   assert.equal(ctx.ops.length, 0);
 });
 
-test('culling: only shapes whose bbox intersects the canvas are drawn', () => {
+test('malformed documents draw nothing and do not throw', () => {
+  for (const annotations of [undefined, null, {}, [1, 2],
+                             { features: 'nope' }]) {
+    const ctx = mockCtx();
+    assert.equal(drawAnnotations(ctx, { transform: T, annotations }), 0);
+  }
+});
+
+test('culling: only features whose bbox intersects the canvas are drawn', () => {
   const ctx = mockCtx();
   const n = drawAnnotations(ctx, {
     transform: T,
-    shapes: [
-      pt(0, 0),
-      pt(1000, 1000),
-      line([[-5000, 0], [-4000, 0]]),
-      poly([[[5000, 5000], [5100, 5000], [5100, 5100]]]),
-    ],
+    annotations: doc(
+      feat(point(0, 0)),
+      feat(point(1000, 1000)),
+      feat({ type: 'LineString', coordinates: [[-5000, 0], [-4000, 0]] }),
+      feat({
+        type: 'Polygon',
+        coordinates: [[[5000, 5000], [5100, 5000], [5100, 5100]]],
+      }),
+    ),
   });
   assert.equal(n, 1);
   assert.equal(arcs(ctx).length, 2); // halo + body of the single point
@@ -80,7 +91,7 @@ test('culling margin: a point just outside the edge is still drawn', () => {
   const ctx = mockCtx();
   // canvas edge is at level-0 x = 256; the point is 2 px outside, within
   // the screen-constant margin, so its halo is partially visible
-  drawAnnotations(ctx, { transform: T, shapes: [pt(258, 0)] });
+  drawAnnotations(ctx, { transform: T, annotations: doc(feat(point(258, 0))) });
   assert.equal(arcs(ctx).length, 2);
 });
 
@@ -88,7 +99,7 @@ test('point: white halo, body fill-else-color, label with text halo', () => {
   const ctx = mockCtx();
   const n = drawAnnotations(ctx, {
     transform: T,
-    shapes: [pt(0, 0, { label: 'A', fill: 'lime', color: 'red' })],
+    annotations: doc(feat(point(0, 0), { label: 'A', fill: 'lime', color: 'red' })),
   });
   assert.equal(n, 1);
   const a = arcs(ctx);
@@ -105,11 +116,30 @@ test('point: white halo, body fill-else-color, label with text halo', () => {
   assert.deepEqual(texts[0].slice(1), ['A', 256 + POINT_RADIUS + 2, 256]);
 });
 
+test('multi point: one marker per position, label at the first', () => {
+  const ctx = mockCtx();
+  const n = drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(feat(
+      { type: 'MultiPoint', coordinates: [[0, 0], [10, 10]] },
+      { label: 'm', fill: 'blue' },
+    )),
+  });
+  assert.equal(n, 1);
+  assert.equal(arcs(ctx).length, 4); // halo + body per position
+  const texts = ctx.ops.filter(([m]) => m === 'fillText');
+  assert.equal(texts.length, 1);
+  assert.deepEqual(texts[0].slice(1), ['m', 256 + POINT_RADIUS + 2, 256]);
+});
+
 test('line: path stroked at 1.5 px in color (default black)', () => {
   const ctx = mockCtx();
   drawAnnotations(ctx, {
     transform: T,
-    shapes: [line([[-10, -10], [0, 0], [10, 10]], { color: 'blue' })],
+    annotations: doc(feat(
+      { type: 'LineString', coordinates: [[-10, -10], [0, 0], [10, 10]] },
+      { color: 'blue' },
+    )),
   });
   const moves = ctx.ops.filter(([m]) => m === 'moveTo');
   const lines = ctx.ops.filter(([m]) => m === 'lineTo');
@@ -123,7 +153,10 @@ test('line: path stroked at 1.5 px in color (default black)', () => {
   // lines are open: no closing segment back to the first point
   assert.equal(ctx.ops.filter(([m]) => m === 'closePath').length, 0);
   const ctx2 = mockCtx();
-  drawAnnotations(ctx2, { transform: T, shapes: [line([[0, 0], [5, 5]])] });
+  drawAnnotations(ctx2, {
+    transform: T,
+    annotations: doc(feat({ type: 'LineString', coordinates: [[0, 0], [5, 5]] })),
+  });
   assert.equal(ctx2.state.strokeStyle, '#000000');
 });
 
@@ -132,7 +165,8 @@ test('polygon: evenodd fill when fill set, outline stroked; transparent = no fil
   const ctx = mockCtx();
   drawAnnotations(ctx, {
     transform: T,
-    shapes: [poly(rings, { fill: 'rgba(255,0,0,0.2)', color: 'red' })],
+    annotations: doc(feat({ type: 'Polygon', coordinates: rings },
+                          { fill: 'rgba(255,0,0,0.2)', color: 'red' })),
   });
   const fills = ctx.ops.filter(([m]) => m === 'fill');
   assert.equal(fills.length, 1);
@@ -143,7 +177,10 @@ test('polygon: evenodd fill when fill set, outline stroked; transparent = no fil
   assert.equal(ctx.ops.filter(([m]) => m === 'closePath').length, 1);
 
   const ctx2 = mockCtx();
-  drawAnnotations(ctx2, { transform: T, shapes: [poly(rings)] });
+  drawAnnotations(ctx2, {
+    transform: T,
+    annotations: doc(feat({ type: 'Polygon', coordinates: rings })),
+  });
   assert.equal(ctx2.ops.filter(([m]) => m === 'fill').length, 0);
   assert.equal(ctx2.state.strokeStyle, '#000000');
 });
@@ -156,7 +193,8 @@ test('polygon holes: every ring is traced (moveTo per ring)', () => {
   const ctx = mockCtx();
   drawAnnotations(ctx, {
     transform: T,
-    shapes: [poly(rings, { fill: 'rgba(0,0,255,0.3)' })],
+    annotations: doc(feat({ type: 'Polygon', coordinates: rings },
+                          { fill: 'rgba(0,0,255,0.3)' })),
   });
   assert.equal(ctx.ops.filter(([m]) => m === 'moveTo').length, 2);
   assert.equal(ctx.ops.filter(([m]) => m === 'fill')[0][1], 'evenodd');
@@ -164,15 +202,52 @@ test('polygon holes: every ring is traced (moveTo per ring)', () => {
   assert.equal(ctx.ops.filter(([m]) => m === 'closePath').length, 2);
 });
 
+test('multi polygon: islands flatten into one evenodd ring set', () => {
+  const islands = [
+    [[-10, -10], [10, -10], [10, 10], [-10, 10]],
+    [[-5, -5], [5, -5], [5, 5], [-5, 5]],
+  ].map((outer) => [outer]);
+  const ctx = mockCtx();
+  drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(feat({ type: 'MultiPolygon', coordinates: islands },
+                          { fill: 'rgba(0,255,0,0.3)' })),
+  });
+  const fills = ctx.ops.filter(([m]) => m === 'fill');
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0][1], 'evenodd');
+  assert.equal(ctx.ops.filter(([m]) => m === 'moveTo').length, 2);
+  assert.equal(ctx.ops.filter(([m]) => m === 'closePath').length, 2);
+  assert.equal(ctx.ops.filter(([m]) => m === 'stroke').length, 1);
+});
+
+test('malformed features are skipped; the rest still draw', () => {
+  const ctx = mockCtx();
+  const n = drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(
+      { type: 'Feature', id: 'bad1',
+        geometry: { type: 'Point', coordinates: 'nope' }, properties: {} },
+      { id: 'bad2', geometry: null },
+      feat(point(0, 0)),
+    ),
+  });
+  assert.equal(n, 1);
+  assert.equal(arcs(ctx).length, 2);
+});
+
 test('styling is screen-constant under zoom; positions rescale', () => {
   // l0 (4, 4) stays in-canvas at both zooms (t8 shows l0 [-32, 32])
   const t1 = { cx: 0, cy: 0, zoom: 1, canvasW: 512, canvasH: 512 };
   const t8 = { cx: 0, cy: 0, zoom: 8, canvasW: 512, canvasH: 512 };
-  const shapes = [pt(4, 4), line([[0, 0], [50, 50]])];
+  const features = [
+    feat(point(4, 4)),
+    feat({ type: 'LineString', coordinates: [[0, 0], [50, 50]] }),
+  ];
   const c1 = mockCtx();
-  drawAnnotations(c1, { transform: t1, shapes });
+  drawAnnotations(c1, { transform: t1, annotations: doc(...features) });
   const c8 = mockCtx();
-  drawAnnotations(c8, { transform: t8, shapes });
+  drawAnnotations(c8, { transform: t8, annotations: doc(...features) });
   const r1 = arcs(c1).map((o) => o[3]);
   const r8 = arcs(c8).map((o) => o[3]);
   assert.deepEqual(r1, r8); // same screen radius at both zooms
@@ -183,11 +258,12 @@ test('styling is screen-constant under zoom; positions rescale', () => {
 
 test('alpha sets globalAlpha for the whole layer; save/restore around it', () => {
   const ctx = mockCtx();
-  drawAnnotations(ctx, { transform: T, shapes: [pt(0, 0)], alpha: 0.25 });
+  drawAnnotations(ctx, { transform: T, annotations: doc(feat(point(0, 0))),
+                         alpha: 0.25 });
   assert.equal(ctx.state.globalAlpha, 0.25);
   assert.equal(ctx.ops[0][0], 'save');
   assert.equal(ctx.ops[ctx.ops.length - 1][0], 'restore');
   const ctx2 = mockCtx();
-  drawAnnotations(ctx2, { transform: T, shapes: [pt(0, 0)] }); // default 1
+  drawAnnotations(ctx2, { transform: T, annotations: doc(feat(point(0, 0))) });
   assert.equal(ctx2.state.globalAlpha, 1);
 });

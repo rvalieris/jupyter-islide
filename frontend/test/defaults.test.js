@@ -16,5 +16,5 @@ test('defaults cover exactly the documented trait names', () => {
 });
 
 test('module version matches the Python-side declaration', () => {
-  assert.equal(ISLIDE_MODULE_VERSION, '1.0.0');
+  assert.equal(ISLIDE_MODULE_VERSION, '2.0.0');
 });

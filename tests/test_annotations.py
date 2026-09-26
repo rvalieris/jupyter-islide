@@ -1,23 +1,32 @@
-"""M2 pure GeoJSON parser tests (no openslide, no widget, no I/O).
+"""M3.5 canonical annotation document tests (no openslide, no widget, no I/O).
 
-Covers: document shapes (FeatureCollection/Feature/bare geometry),
-per-kind normalization (point/line/polygon/multi/collection), unit
-conversion (px default, um via mpp), property passthrough + type
-validation, id assignment, degenerate-shape skipping (warning), and the
-malformed-input ValueError contract.
+Covers: the canonical document shape (FeatureCollection of
+{id, geometry, properties} features), document inputs (FeatureCollection /
+single Feature / bare geometry), structure-preserving normalization
+(Point/LineString/Polygon/Multi*, rings open, z dropped), GeometryCollection
+expansion (one feature per member, properties stamped, the M2 id-stamping
+bug now a ValueError), id assignment (explicit kept + str-coerced, fresh
+aN skipping used ids, duplicates a ValueError), properties passthrough
+(label/color/fill string-checked, the rest untouched), unit conversion
+(px default, um via mpp, before the degenerate checks), degenerate drops
+(Polygon, LineString, MultiPolygon islands, feature-level warning), and
+the malformed-input ValueError contract.
 """
 from __future__ import annotations
 
-import math
 import warnings
 
 import pytest
 
 from islide.annotations import normalize_ring, parse_annotations
 
+EMPTY = {"type": "FeatureCollection", "features": []}
+
 
 def feat(geom, props=None, fid=None):
-    f = {"type": "Feature", "geometry": geom, "properties": props or {}}
+    f = {"type": "Feature", "geometry": geom}
+    if props is not None:
+        f["properties"] = props
     if fid is not None:
         f["id"] = fid
     return f
@@ -27,238 +36,507 @@ def fc(*feats):
     return {"type": "FeatureCollection", "features": list(feats)}
 
 
-def pt(x, y):
+def point(x, y):
     return {"type": "Point", "coordinates": [x, y]}
 
 
-def line(*xy):
-    return {"type": "LineString", "coordinates": [list(p) for p in xy]}
+def features(doc):
+    return doc["features"]
 
 
-def poly(ring, hole=None):
-    rings = [list(ring)]
-    if hole is not None:
-        rings.append(list(hole))
-    return {"type": "Polygon", "coordinates": rings}
+# ----------------------------------------------------------- document shape
+class TestDocumentShape:
+    def test_bare_geometry_is_a_document(self):
+        doc = parse_annotations(point(1, 2))
+        assert doc == {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "a0",
+                    "geometry": {"type": "Point", "coordinates": [1.0, 2.0]},
+                    "properties": {},
+                }
+            ],
+        }
+
+    def test_empty_feature_collection(self):
+        assert parse_annotations(fc()) == EMPTY
+
+    def test_null_geometry_features_are_legal_no_ops(self):
+        doc = fc(
+            {"type": "Feature", "geometry": None},
+            {"type": "Feature", "geometry": None, "properties": None},
+        )
+        assert parse_annotations(doc) == EMPTY
+
+    def test_parse_is_pure(self):
+        src = {
+            "type": "FeatureCollection",
+            "features": [
+                feat(point(0, 0), props={"label": "x"}, fid="p1"),
+            ],
+        }
+        snapshot = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "id": "p1",
+                 "geometry": {"type": "Point", "coordinates": [0, 0]},
+                 "properties": {"label": "x"}},
+            ],
+        }
+        assert parse_annotations(src) == snapshot
+        assert src == snapshot  # input not mutated
 
 
-# ---------------------------------------------------------------- documents
-def test_bare_geometry_document():
-    shapes = parse_annotations(pt(10, 20))
-    assert shapes == [
-        {"id": "a0", "kind": "point", "points": [[10.0, 20.0]],
-         "label": None, "color": None, "fill": None},
-    ]
+# ---------------------------------------------------- structure-preserving
+class TestStructurePreserving:
+    def test_point_drops_z(self):
+        doc = parse_annotations({"type": "Point", "coordinates": [1, 2, 3]})
+        assert features(doc)[0]["geometry"] == {
+            "type": "Point", "coordinates": [1.0, 2.0]
+        }
+
+    def test_multi_point_stays_whole(self):
+        doc = parse_annotations(
+            {"type": "MultiPoint", "coordinates": [[0, 0], [1, 2], [3, 4]]}
+        )
+        feats = features(doc)
+        assert len(feats) == 1
+        assert feats[0]["geometry"] == {
+            "type": "MultiPoint",
+            "coordinates": [[0.0, 0.0], [1.0, 2.0], [3.0, 4.0]],
+        }
+
+    def test_line_string_stays_whole(self):
+        doc = parse_annotations(
+            {"type": "LineString", "coordinates": [[0, 0], [10, 20], [30, 40]]}
+        )
+        assert features(doc)[0]["geometry"] == {
+            "type": "LineString",
+            "coordinates": [[0.0, 0.0], [10.0, 20.0], [30.0, 40.0]],
+        }
+
+    def test_polygon_stays_whole_rings_open(self):
+        doc = parse_annotations(
+            {
+                "type": "Polygon",
+                "coordinates": [
+                    [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],  # closed outer
+                    [[1, 1], [2, 1], [2, 2], [1, 2]],          # closed hole
+                ],
+            }
+        )
+        assert features(doc)[0]["geometry"] == {
+            "type": "Polygon",
+            "coordinates": [
+                [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+                [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]],
+            ],
+        }
+
+    def test_multi_polygon_stays_whole(self):
+        doc = parse_annotations(
+            {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [
+                        [[0, 0], [2, 0], [2, 2], [0, 2]],
+                        [[0.5, 0.5], [1.5, 0.5], [1.5, 1.5]],
+                    ],
+                    [[[10, 10], [12, 10], [12, 12]]],
+                ],
+            }
+        )
+        feats = features(doc)
+        assert len(feats) == 1
+        geom = feats[0]["geometry"]
+        assert geom["type"] == "MultiPolygon"
+        assert len(geom["coordinates"]) == 2
+        assert geom["coordinates"][0][0] == [
+            [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]
+        ]
 
 
-def test_feature_collection_mixed_kinds_and_props():
-    doc = fc(
-        feat(pt(0, 0), {"label": "A"}, fid=1),
-        feat(line((0, 0), (10, 0), (10, 5)), {"color": "red"}),
-        feat(poly([(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]),
-             {"fill": "rgba(0,0,255,0.5)"}),
-    )
-    shapes = parse_annotations(doc)
-    assert [s["id"] for s in shapes] == ["1", "a1", "a2"]
-    assert [s["kind"] for s in shapes] == ["point", "line", "polygon"]
-    assert shapes[0]["label"] == "A"
-    assert shapes[1]["color"] == "red"
-    assert shapes[2]["fill"] == "rgba(0,0,255,0.5)"
-    assert shapes[1]["points"] == [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0]]
-    assert shapes[2]["points"] == [
-        [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-    ]
+# ------------------------------------------------------- geometry collection
+class TestGeometryCollection:
+    def test_expands_one_feature_per_member_properties_stamped(self):
+        doc = parse_annotations(
+            feat(
+                {
+                    "type": "GeometryCollection",
+                    "geometries": [
+                        point(1, 1),
+                        {"type": "LineString", "coordinates": [[0, 0], [5, 5]]},
+                    ],
+                },
+                props={"label": "stamped"},
+            )
+        )
+        feats = features(doc)
+        assert [f["geometry"]["type"] for f in feats] == ["Point", "LineString"]
+        assert [f["properties"] for f in feats] == [
+            {"label": "stamped"} for _ in feats
+        ]
+        assert [f["id"] for f in feats] == ["a0", "a1"]
+
+    def test_nested_collections_expand(self):
+        doc = parse_annotations(
+            {
+                "type": "GeometryCollection",
+                "geometries": [
+                    {"type": "GeometryCollection", "geometries": [point(1, 1)]},
+                    point(2, 2),
+                ],
+            }
+        )
+        assert [f["geometry"]["type"] for f in features(doc)] == [
+            "Point", "Point"
+        ]
+
+    def test_null_members_are_skipped(self):
+        doc = parse_annotations(
+            {
+                "type": "GeometryCollection",
+                "geometries": [None, point(1, 1)],
+            }
+        )
+        assert len(features(doc)) == 1
 
 
-def test_multi_point_expands_to_point_shapes():
-    doc = {"type": "MultiPoint", "coordinates": [[1, 2], [3, 4], [5, 6]]}
-    shapes = parse_annotations(doc)
-    assert [s["kind"] for s in shapes] == ["point", "point", "point"]
-    assert [s["points"] for s in shapes] == [
-        [[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]],
-    ]
-    assert [s["id"] for s in shapes] == ["a0", "a1", "a2"]
+# ------------------------------------------------------------------------ ids
+class TestIds:
+    def test_fallback_ids_are_aN_in_document_order(self):
+        doc = parse_annotations(fc(feat(point(0, 0)), feat(point(1, 1))))
+        assert [f["id"] for f in features(doc)] == ["a0", "a1"]
+
+    def test_explicit_ids_kept_and_str_coerced(self):
+        doc = parse_annotations(
+            fc(feat(point(0, 0), fid="p1"), feat(point(1, 1), fid=7),
+               feat(point(2, 2), fid=2.5))
+        )
+        assert [f["id"] for f in features(doc)] == ["p1", "7", "2.5"]
+
+    def test_fallback_ids_skip_used(self):
+        doc = parse_annotations(fc(feat(point(0, 0), fid="a0"), feat(point(1, 1))))
+        assert [f["id"] for f in features(doc)] == ["a0", "a1"]
+
+    def test_duplicate_explicit_ids_raise(self):
+        with pytest.raises(ValueError, match="duplicate"):
+            parse_annotations(
+                fc(feat(point(0, 0), fid="x"), feat(point(1, 1), fid="x"))
+            )
+
+    def test_coerced_duplicate_ids_raise(self):
+        # int 1 and str "1" are the same id after coercion
+        with pytest.raises(ValueError, match="duplicate"):
+            parse_annotations(fc(feat(point(0, 0), fid=1), feat(point(1, 1), fid="1")))
+
+    def test_geometry_collection_feature_id_cannot_be_shared(self):
+        # The latent M2 bug, fixed: an id-bearing GC feature expands into
+        # several features, which cannot share one id.
+        doc = feat(
+            {"type": "GeometryCollection", "geometries": [point(0, 0), point(1, 1)]},
+            fid="x",
+        )
+        with pytest.raises(ValueError, match="duplicate"):
+            parse_annotations(doc)
+
+    def test_geometry_collection_feature_id_single_member_kept(self):
+        doc = parse_annotations(
+            feat(
+                {"type": "GeometryCollection", "geometries": [point(0, 0)]},
+                fid="x",
+            )
+        )
+        assert [f["id"] for f in features(doc)] == ["x"]
+
+    def test_id_never_renumbered_on_reimport(self):
+        src = fc(
+            feat(point(0, 0), fid="keep"),
+            feat(point(1, 1)),
+        )
+        once = parse_annotations(src)
+        assert parse_annotations(once) == once
+        assert [f["id"] for f in features(once)] == ["keep", "a0"]
 
 
-def test_multi_polygon_and_geometry_collection():
-    ring1 = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
-    ring2 = [(100, 100), (110, 100), (110, 110), (100, 110), (100, 100)]
-    doc = feat(
-        {"type": "GeometryCollection", "geometries": [
-            {"type": "MultiPolygon", "coordinates": [[ring1], [ring2]]},
-            pt(1, 1),
-        ]},
-        {"label": "g"},
-    )
-    shapes = parse_annotations(doc)
-    assert [s["kind"] for s in shapes] == ["polygon", "polygon", "point"]
-    assert all(s["label"] == "g" for s in shapes)
-    assert shapes[0]["points"] == [
-        [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-    ]
+# --------------------------------------------------------------- properties
+class TestProperties:
+    def test_unknown_keys_pass_through_whole(self):
+        doc = parse_annotations(
+            feat(point(0, 0), props={"m": 5, "tags": [1, 2], "note": None})
+        )
+        assert features(doc)[0]["properties"] == {
+            "m": 5, "tags": [1, 2], "note": None
+        }
+
+    def test_absent_properties_become_empty_object(self):
+        doc = parse_annotations(point(0, 0))
+        assert features(doc)[0]["properties"] == {}
+
+    def test_none_properties_become_empty_object(self):
+        doc = parse_annotations(
+            {"type": "Feature", "geometry": point(0, 0), "properties": None}
+        )
+        assert features(doc)[0]["properties"] == {}
+
+    @pytest.mark.parametrize("key", ["label", "color", "fill"])
+    def test_non_string_style_properties_raise(self, key):
+        with pytest.raises(ValueError, match="must be a string"):
+            parse_annotations(feat(point(0, 0), props={key: 5}))
+
+    def test_none_style_properties_are_allowed(self):
+        doc = parse_annotations(
+            feat(point(0, 0), props={"label": None, "color": None, "fill": None})
+        )
+        assert features(doc)[0]["properties"] == {
+            "label": None, "color": None, "fill": None
+        }
 
 
-def test_polygon_holes_kept_as_rings():
-    ring = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
-    hole = [(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]
-    shapes = parse_annotations(feat(poly(ring, hole)))
-    assert shapes[0]["points"] == [
-        [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-        [[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]],
-    ]
+# ----------------------------------------------------------------------- units
+class TestUnits:
+    def test_px_is_default_and_unscaled(self):
+        doc = parse_annotations(point(2, 3))
+        assert features(doc)[0]["geometry"]["coordinates"] == [2.0, 3.0]
 
+    def test_um_is_scaled_by_mpp(self):
+        doc = parse_annotations(
+            {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [[[0, 0], [1000, 0], [1000, 1000]]],  # 1000 um squares
+                ],
+            },
+            units="um",
+            mpp=0.5,  # px = um / mpp: 1000 um -> 2000 px
+        )
+        assert features(doc)[0]["geometry"]["coordinates"][0][0] == [
+            [0.0, 0.0], [2000.0, 0.0], [2000.0, 2000.0]
+        ]
 
-def test_open_triangle_ring_is_accepted():
-    shapes = parse_annotations(feat(poly([(0, 0), (10, 0), (0, 10)])))
-    assert shapes[0]["points"] == [[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]]
-
-
-def test_rings_stored_open_closing_position_stripped():
-    # Wire model (DESIGN.md §6.3): rings are stored open; a redundant
-    # closing position is dropped so the renderer can rely on implicit
-    # closure (it closes each ring when tracing).
-    closed = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
-    shapes = parse_annotations(feat(poly(closed)))
-    assert shapes[0]["points"] == [[[0.0, 0.0], [10.0, 0.0],
-                                     [10.0, 10.0], [0.0, 10.0]]]
-
-
-def test_feature_with_null_geometry_is_a_noop():
-    doc = fc(
-        {"type": "Feature", "geometry": None, "properties": {}},
-        feat(pt(1, 2)),
-    )
-    shapes = parse_annotations(doc)
-    assert len(shapes) == 1
-    assert shapes[0]["points"] == [[1.0, 2.0]]
-
-
-def test_fallback_ids_are_unique_and_stable():
-    doc = fc(feat(pt(0, 0)), feat(pt(1, 1)), feat(pt(2, 2)))
-    shapes = parse_annotations(doc)
-    assert [s["id"] for s in shapes] == ["a0", "a1", "a2"]
-    assert len({s["id"] for s in shapes}) == len(shapes)
-
-
-# ------------------------------------------------------------- unit modes
-def test_px_is_default_and_unscaled():
-    assert parse_annotations(pt(10, 20))[0]["points"] == [[10.0, 20.0]]
-    assert parse_annotations(pt(10, 20), units="px")[0]["points"] == [[10.0, 20.0]]
-
-
-def test_um_conversion_uses_mpp():
-    # px = um / mpp; mpp 0.25 -> 4x
-    shapes = parse_annotations(pt(10, 20), units="um", mpp=0.25)
-    assert shapes[0]["points"] == [[40.0, 80.0]]
-
-
-def test_um_requires_positive_finite_mpp():
-    for mpp in (None, 0, -1, float("inf"), float("nan"), True):
+    def test_um_requires_mpp(self):
         with pytest.raises(ValueError, match="mpp"):
-            parse_annotations(pt(0, 0), units="um", mpp=mpp)
+            parse_annotations(point(0, 0), units="um")
+
+    def test_bad_units_raise(self):
+        with pytest.raises(ValueError, match="units"):
+            parse_annotations(point(0, 0), units="ft")
 
 
-def test_bad_units_raises():
-    with pytest.raises(ValueError, match="units"):
-        parse_annotations(pt(0, 0), units="ft")
+# ----------------------------------------------------------- degenerate drops
+class TestDegenerateDrops:
+    def test_degenerate_polygon_dropped_with_warning(self):
+        doc = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [2, 0]]]}
+        with pytest.warns(UserWarning, match="Polygon"):
+            assert parse_annotations(doc) == EMPTY
+
+    def test_polygon_with_degenerate_hole_drops_whole(self):
+        doc = {
+            "type": "Polygon",
+            "coordinates": [
+                [[0, 0], [4, 0], [4, 4], [0, 4]],
+                [[1, 1], [2, 1], [3, 1]],  # collinear hole
+            ],
+        }
+        with pytest.warns(UserWarning, match="Polygon"):
+            assert parse_annotations(doc) == EMPTY
+
+    def test_short_line_dropped_with_warning(self):
+        doc = {"type": "LineString", "coordinates": [[0, 0], [0, 0]]}
+        with pytest.warns(UserWarning, match="LineString"):
+            assert parse_annotations(doc) == EMPTY
+
+    def test_multi_polygon_loses_degenerate_islands(self):
+        doc = {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[0, 0], [1, 0], [2, 0]]],  # collinear island
+                [[[10, 10], [12, 10], [12, 12]]],  # fine island
+            ],
+        }
+        with pytest.warns(UserWarning, match="MultiPolygon"):
+            parsed = parse_annotations(doc)
+        feats = features(parsed)
+        assert len(feats) == 1
+        assert feats[0]["geometry"]["coordinates"][0][0] == [
+            [10.0, 10.0], [12.0, 10.0], [12.0, 12.0]
+        ]
+
+    def test_multi_polygon_all_islands_dropped_drops_feature(self):
+        doc = {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[0, 0], [1, 0], [2, 0]]],
+                [[[0, 0], [0, 1], [1, 1]], [[0.2, 0.2], [0.3, 0.2], [0.4, 0.2]]],
+            ],
+        }
+        with pytest.warns(UserWarning) as rec:
+            assert parse_annotations(doc) == EMPTY
+        # two island warnings + the feature-level drop
+        assert len(rec) == 3
+
+    def test_geometry_collection_all_members_dropped_drops_feature(self):
+        doc = {
+            "type": "GeometryCollection",
+            "geometries": [
+                {"type": "LineString", "coordinates": [[0, 0], [0, 0]]},
+                {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [2, 0]]]},
+            ],
+        }
+        with pytest.warns(UserWarning) as rec:
+            assert parse_annotations(doc) == EMPTY
+        # one warning per degenerate member + the feature-level drop
+        assert len(rec) == 3
+
+    def test_geometry_collection_member_drops_others_survive(self):
+        doc = {
+            "type": "GeometryCollection",
+            "geometries": [
+                {"type": "LineString", "coordinates": [[0, 0], [0, 0]]},
+                point(5, 6),
+            ],
+        }
+        with pytest.warns(UserWarning, match="LineString"):
+            parsed = parse_annotations(doc)
+        feats = features(parsed)
+        assert [f["geometry"]["type"] for f in feats] == ["Point"]
+        assert [f["id"] for f in feats] == ["a0"]
 
 
-# ------------------------------------------------------------ validation
-def test_malformed_documents_raise():
-    for doc in [
-        "not a doc",
-        None,
-        {"type": "Mystery"},
-        {"type": "FeatureCollection"},  # missing features
-        {"type": "FeatureCollection", "features": "nope"},
-        {"type": "FeatureCollection", "features": [pt(0, 0)]},  # not a Feature
-        {"type": "Feature", "properties": {}},  # missing geometry
-        {"type": "Feature", "geometry": "nope"},
-        {"type": "Feature", "geometry": pt(0, 0), "properties": "nope"},
-        {"type": "GeometryCollection"},  # missing geometries
-    ]:
-        with pytest.raises(ValueError):
-            parse_annotations(doc)
+# ------------------------------------------------------------- idempotency
+class TestIdempotent:
+    def test_parse_of_canonical_document_is_unchanged(self):
+        src = fc(
+            feat(point(1, 2), props={"label": "a"}, fid="p1"),
+            feat({"type": "MultiPoint", "coordinates": [[3, 4], [5, 6]]}, fid="mp"),
+            feat(
+                {"type": "LineString", "coordinates": [[0, 0], [9, 8]]},
+                fid="l",
+            ),
+            feat(
+                {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[0, 0], [4, 0], [4, 4], [0, 4]],
+                        [[1, 1], [2, 1], [2, 2], [1, 2]],
+                    ],
+                },
+                fid="g",
+            ),
+            feat(
+                {
+                    "type": "MultiPolygon",
+                    "coordinates": [
+                        [
+                            [[10, 0], [12, 0], [12, 2]],
+                            [[10.5, 0.5], [11.5, 0.5], [11.5, 1.5]],
+                        ]
+                    ],
+                },
+                fid="mg",
+            ),
+        )
+        once = parse_annotations(src)
+        assert parse_annotations(once) == once
 
 
-def test_bad_coordinates_raise():
-    for g in [
-        {"type": "Point", "coordinates": [0]},  # 1 number
-        {"type": "Point", "coordinates": [None, 0]},
-        {"type": "Point", "coordinates": [0, "x"]},
-        {"type": "Point", "coordinates": [float("nan"), 0]},
-        {"type": "Point", "coordinates": [float("inf"), 0]},
-        {"type": "Point", "coordinates": [True, 0]},
-        {"type": "LineString", "coordinates": [(0, 0)]},  # 1 position
-        {"type": "LineString", "coordinates": "nope"},
-    ]:
-        with pytest.raises(ValueError):
-            parse_annotations(g)
-
-
-def test_bad_rings_raise():
-    for doc in [
-        {"type": "Polygon", "coordinates": [[(0, 0), (1, 1)]]},  # 2 positions
-        {"type": "Polygon", "coordinates": []},  # no rings
-        {"type": "Polygon", "coordinates": [1, 2]},  # not a list of rings
-    ]:
-        with pytest.raises(ValueError):
-            parse_annotations(doc)
-
-
-def test_bad_property_types_raise():
-    with pytest.raises(ValueError, match="label"):
-        parse_annotations(feat(pt(0, 0), {"label": 5}))
-    with pytest.raises(ValueError, match="color"):
-        parse_annotations(feat(pt(0, 0), {"color": 1.0}))
-    with pytest.raises(ValueError, match="fill"):
-        parse_annotations(feat(pt(0, 0), {"fill": [1]}))
-
-
-def test_bad_feature_id_raises():
-    with pytest.raises(ValueError, match="id"):
-        parse_annotations(feat(pt(0, 0), None, fid=[1]))
-
-
-# ----------------------------------------------------------- degenerate
-def test_degenerate_shapes_skipped_with_warning():
-    doc = fc(
-        feat(poly([(0, 0), (1, 1), (2, 2), (0, 0)])),  # collinear: zero area
-        feat(line((5, 5), (5, 5))),  # zero length
-        feat(pt(9, 9)),
+# ------------------------------------------------------------------- malformed
+class TestMalformed:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            None,
+            5,
+            "x",
+            [1, 2],
+            {"type": "Bogus", "coordinates": [[0, 0]]},
+            {"type": "FeatureCollection"},  # missing features
+            {"type": "FeatureCollection", "features": "nope"},
+            {"type": "FeatureCollection", "features": [point(0, 0)]},  # not a Feature
+            {"type": "Feature", "geometry": [1, 2]},  # geometry not an object
+            {"type": "Feature"},  # missing geometry member
+            {"type": "Feature", "geometry": {"type": "Bogus"}},
+            {"type": "Feature", "geometry": {"type": "Point"}},  # missing coords
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0]}},
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [True, 0]}},
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [float("inf"), 0]}},
+            {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[0, 0]]}},
+            {"type": "Feature", "geometry": {"type": "LineString"}},
+            {"type": "Feature", "geometry": {"type": "MultiPoint", "coordinates": "nope"}},
+            {"type": "Feature", "geometry": {"type": "MultiPoint", "coordinates": [[0]]}},
+            {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
+            {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 1]]]}},
+            {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [2, 2], [3, "x"]]]}},
+            {"type": "Feature", "geometry": {"type": "MultiPolygon", "coordinates": "nope"}},
+            {"type": "Feature", "geometry": {"type": "GeometryCollection"}},
+            {"type": "Feature", "geometry": {"type": "GeometryCollection", "geometries": "nope"}},
+        ],
     )
-    with pytest.warns(UserWarning) as rec:
-        shapes = parse_annotations(doc)
-    assert len(rec) == 2
-    assert [s["kind"] for s in shapes] == ["point"]
-    assert shapes[0]["points"] == [[9.0, 9.0]]
+    def test_bad_documents_raise(self, bad):
+        with pytest.raises(ValueError):
+            parse_annotations(bad)
+
+    @pytest.mark.parametrize("fid", [[1, 2], True])
+    def test_bad_feature_ids_raise(self, fid):
+        with pytest.raises(ValueError, match="id"):
+            parse_annotations(feat(point(0, 0), fid=fid))
+
+    def test_non_dict_properties_raise(self):
+        with pytest.raises(ValueError, match="properties"):
+            parse_annotations(
+                {"type": "Feature", "geometry": point(0, 0), "properties": [1]}
+            )
 
 
-# ------------------------------------------------------- normalize_ring (M3)
-def test_normalize_ring_strips_redundant_closing_position():
-    assert normalize_ring([[0, 0], [10, 0], [0, 10], [0, 0]]) == [
-        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
-    ]
-    assert normalize_ring(((0, 0), (10, 0), (0, 10))) == [
-        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
-    ]
-    # open rings are kept as-is; tuples come back as float lists
-    assert normalize_ring([[0, 0], [10, 0], [0, 10]]) == [
-        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
-    ]
+# ------------------------------------------------------- bare geometry inputs
+class TestBareGeometryInputs:
+    @pytest.mark.parametrize(
+        "geom",
+        [
+            point(0, 1),
+            {"type": "MultiPoint", "coordinates": [[0, 0], [1, 1]]},
+            {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
+            {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1]]]},
+            {"type": "MultiPolygon", "coordinates": [[[[0, 0], [1, 0], [1, 1]]]]},
+            {"type": "GeometryCollection", "geometries": [point(0, 0)]},
+        ],
+    )
+    def test_each_bare_geometry_is_a_document(self, geom):
+        doc = parse_annotations(geom)
+        assert doc["type"] == "FeatureCollection"
+        assert len(features(doc)) >= 1
+        for f in features(doc):
+            assert f["type"] == "Feature"
+            assert isinstance(f["id"], str)
+            assert f["properties"] == {}
 
 
-def test_normalize_ring_rejects_degenerate_and_malformed():
-    assert normalize_ring(None) is None
-    assert normalize_ring("nope") is None
-    assert normalize_ring([1, 2]) is None
-    assert normalize_ring([[0, 0]]) is None
-    assert normalize_ring([[0, 0], [5, 5]]) is None
-    assert normalize_ring([[0, 0], [0, 0], [0, 0]]) is None       # duplicates
-    assert normalize_ring([[0, 0], [10, 0], [20, 0]]) is None     # collinear
-    assert normalize_ring([[0, 0], [10, 0], [float("nan"), 0]]) is None
-    assert normalize_ring([[0, 0], [10, 0], [0, float("inf")]]) is None
-    assert normalize_ring([[0, 0], [10], [0, 10]]) is None        # bad arity
-    assert normalize_ring([[0, 0], [10, 0, 0], [0, 10]]) is None
-    # a 3-position [A, B, A] ring is a genuine closed form: area 0
-    assert normalize_ring([[0, 0], [10, 0], [0, 0]]) is None
+# ------------------------------------------------------------- normalize_ring
+class TestNormalizeRing:
+    def test_closing_position_dropped(self):
+        assert normalize_ring([[0, 0], [4, 0], [4, 4], [0, 0]]) == [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0]
+        ]
+
+    def test_open_ring_kept(self):
+        assert normalize_ring([[0, 0], [4, 0], [4, 4]]) == [
+            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0]
+        ]
+
+    def test_non_finite_returns_none(self):
+        assert normalize_ring([[0, 0], [float("inf"), 0], [0, 1]]) is None
+
+    def test_collinear_returns_none(self):
+        assert normalize_ring([[0, 0], [1, 0], [2, 0]]) is None
+
+    def test_two_point_returns_none(self):
+        assert normalize_ring([[0, 0], [1, 0]]) is None
+
+    def test_malformed_returns_none(self):
+        assert normalize_ring("nope") is None
+        assert normalize_ring(None) is None
+        assert normalize_ring([[0, 0], [1]]) is None
+
+

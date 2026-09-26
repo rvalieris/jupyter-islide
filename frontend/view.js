@@ -10,6 +10,7 @@
  *              -> debounced `viewport` trait (Python plans + fetches tiles)
  *   Python     -> `tiles` (data URLs) + `tile_geo` (level-space rects)
  *              -> decoded image cache -> canvas
+ *   Python     -> `annotations` (canonical document; M3.5) -> overlay pass
  */
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
@@ -552,10 +553,10 @@ export class SlideView extends DOMWidgetView {
     actx.clearRect(0, 0, w, h);
     drawAnnotations(actx, {
       transform: t,
-      shapes: this.model.get('annotations') || [],
+      annotations: this.model.get('annotations') || {},
       alpha: this._annotAlpha,
     });
-    // M3: the in-progress polygon draft, on top of the imported shapes,
+    // M3: the in-progress polygon draft, on top of the imported features,
     // under the same alpha slider (DESIGN.md §6.4).
     if (this._poly.mode === MODE_DRAWING) {
       drawDraftPolygon(actx, {

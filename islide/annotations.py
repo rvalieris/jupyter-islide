@@ -1,34 +1,49 @@
-"""Pure GeoJSON -> normalized annotation shapes (M2, DESIGN.md §6.3).
+"""Pure GeoJSON -> canonical annotation document (M3.5, DESIGN.md §6.3).
 
 Read-only annotation import: a GeoJSON document (``FeatureCollection`` /
-``Feature`` / bare geometry) is normalized into a list of shape dicts in
-level-0 slide px (origin at the slide origin, **y down**, no CRS):
+``Feature`` / bare geometry) is normalized into the **canonical annotation
+document**, the value the ``annotations`` trait holds and the JS view
+renders read-only:
 
-    {id, kind, points, label, color, fill}
+    {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": "<str>", "geometry": <geometry>,
+         "properties": <object>}, ...]}
 
-* ``id``     : str (the feature ``id`` member, else the fallback ``"a{n}"``)
-* ``kind``   : "point" | "line" | "polygon"
-* ``points`` : point    -> ``[[x, y]]``
-               line     -> ``[[x, y], ...]``
-               polygon  -> list of rings, each a list of ``[x, y]``
-               (holes preserved; the renderer fills with the evenodd rule)
-* ``label``  : str | None  (drawn next to points; plain text, not HTML)
-* ``color``  : CSS color | None  (stroke/outline; renderer defaults to black)
-* ``fill``   : CSS color | None  (interior; renderer defaults to transparent)
-
-Coordinate units: ``units="px"`` (default) means the document's coordinates
-are already level-0 px; ``units="um"`` means microns from the slide origin,
-converted with ``mpp`` (``px = um / mpp``; one mpp for both axes — the
-slide's mpp-x, see ``SlideMeta.mpp``).
+* **Level-0 slide px** (origin at the slide origin, **y down**, no CRS):
+  ``units="px"`` (default) means the document's coordinates already are;
+  ``units="um"`` means microns from the slide origin, converted with
+  ``mpp`` (``px = um / mpp``; one mpp for both axes — the slide's mpp-x).
+  The conversion happens before the degenerate checks. A position's third
+  component (z) is dropped.
+* **Structure-preserving**: a ``Point``/``MultiPoint``/``LineString``/
+  ``Polygon``/``MultiPolygon`` stays one feature, whole (a ``Multi*`` keeps
+  all of its members). A ``GeometryCollection`` expands to one feature per
+  member geometry (recursively), each stamped with the feature's
+  ``properties``.
+* **Rings** (all polygon rings, holes included) go through
+  ``normalize_ring``: finite 2D positions, **stored open** (a redundant
+  closing position is dropped). A ``Polygon`` with any degenerate ring —
+  including a hole — is dropped (``UserWarning``); a ``MultiPolygon`` loses
+  degenerate islands (warning each); a ``LineString`` below the length
+  threshold is dropped (warning); a feature left without geometry is
+  dropped (warning).
+* **Ids**: a feature's ``id`` (str/int/float -> ``str``) if present, else a
+  fresh ``aN``; ids are unique across the document and a collision raises
+  ``ValueError`` — including the latent M2 case of a
+  ``GeometryCollection`` feature *with* an ``id`` expanding into 2+
+  members (its id cannot be shared).
+* **Properties pass through whole**: ``label``/``color``/``fill`` must be
+  strings (or absent/``null``); every other key (and its value) is kept
+  untouched.
 
 Validation contract: document-level structure is strict (``ValueError``:
 non-dict document, unknown type, missing ``features``/``geometry``/
-``geometries``/``coordinates`` members, non-dict ``properties``, non-numeric
-or boolean or non-finite coordinates, rings with <3 positions, 1-point
-LineStrings, non-string ``label``/``color``/``fill``). Degenerate but
-well-formed geometry (zero-area polygon, zero-length line) is skipped with a
-``warnings.warn``. A Feature whose ``geometry`` is ``null`` is a legal no-op.
-Coordinates outside the slide are legal; the renderer culls/clips them.
+``geometries``/``coordinates`` members, non-dict ``properties``, non-string
+``label``/``color``/``fill``, non-numeric or boolean or non-finite
+coordinates, rings with <3 positions, 1-point LineStrings, non-string or
+boolean feature ``id``, duplicate ids). A Feature whose ``geometry`` is
+``null`` is a legal no-op. Coordinates outside the slide are legal; the
+renderer culls/clips them.
 """
 from __future__ import annotations
 
@@ -53,53 +68,71 @@ _DEGENERATE_AREA = 1e-6      # px^2
 _DEGENERATE_LENGTH = 1e-6    # px
 
 
-def parse_annotations(
-    doc: Any, units: str = "px", mpp: float | None = None
-) -> list[dict]:
-    """Normalize a GeoJSON annotation document into a shape list.
+def parse_annotations(doc: Any, units: str = "px", mpp: float | None = None) -> dict:
+    """Normalize a GeoJSON annotation document into the canonical document.
 
-    ``doc`` is the parsed document (dict). Returns new shape dicts; nothing
-    is mutated, and the input may be shared.
+    ``doc`` is the parsed document (dict): a GeoJSON ``FeatureCollection``,
+    a single ``Feature``, or a bare geometry (all six types). Returns a
+    *new* document of the form ``{"type": "FeatureCollection", "features":
+    [{type, id, geometry, properties}, ...]}`` (see the module docstring);
+    nothing is mutated, and the input may be shared.
 
-    Raises ``ValueError`` on malformed input (see module docstring) or on
-    ``units="um"`` without a positive finite ``mpp``.
+    Raises ``ValueError`` on malformed input or on ``units="um"`` without a
+    positive finite ``mpp``; degenerate but well-formed members are skipped
+    with a ``UserWarning``.
     """
-    if units not in ("px", "um"):
-        raise ValueError(f"units must be 'px' or 'um', got {units!r}")
-    scale = 1.0
-    if units == "um":
-        if (
-            isinstance(mpp, bool)
-            or not isinstance(mpp, (int, float))
-            or not math.isfinite(mpp)
-            or mpp <= 0
-        ):
-            raise ValueError(
-                "units='um' requires a positive finite mpp (slide mpp-x)"
-            )
-        scale = 1.0 / float(mpp)
-
-    shapes: list[dict] = []
-    n = 0
+    scale = _scale(units, mpp)
+    features: list[dict] = []
+    used: set[str] = set()
     for geom, props, fid in _document_features(doc):
         if geom is None:
-            continue  # Feature with null geometry: legal, produces no shapes
-        label = _opt_str(props, "label")
-        color = _opt_str(props, "color")
-        fill = _opt_str(props, "fill")
-        for kind, points in _expand_geometry(geom, scale):
-            shapes.append(
+            continue  # Feature with null geometry: legal, produces nothing
+        _check_props(props)
+        leaves = _expand_geometry(geom, scale)
+        if not leaves:
+            if geom["type"] in ("MultiPolygon", "GeometryCollection"):
+                warnings.warn(
+                    "islide: dropping annotation feature "
+                    "(no surviving geometry)",
+                    UserWarning,
+                )
+            continue
+        fid_s = None if fid is None else str(fid)
+        if fid_s is not None and len(leaves) > 1:
+            # A GeometryCollection feature expands into several features;
+            # they cannot share one id (the latent M2 bug, now a hard error).
+            raise ValueError(
+                f"duplicate annotation id {fid_s!r}: a GeometryCollection "
+                f"feature expands into {len(leaves)} features, which cannot "
+                "share one id"
+            )
+        for i, leaf in enumerate(leaves):
+            features.append(
                 {
-                    "id": str(fid) if fid is not None else f"a{n}",
-                    "kind": kind,
-                    "points": points,
-                    "label": label,
-                    "color": color,
-                    "fill": fill,
+                    "type": "Feature",
+                    "id": _take_id(used, fid_s if i == 0 else None),
+                    "geometry": leaf,
+                    "properties": dict(props),
                 }
             )
-            n += 1
-    return shapes
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _scale(units: str, mpp: float | None) -> float:
+    if units not in ("px", "um"):
+        raise ValueError(f"units must be 'px' or 'um', got {units!r}")
+    if units == "px":
+        return 1.0
+    if (
+        isinstance(mpp, bool)
+        or not isinstance(mpp, (int, float))
+        or not math.isfinite(mpp)
+        or mpp <= 0
+    ):
+        raise ValueError(
+            "units='um' requires a positive finite mpp (slide mpp-x)"
+        )
+    return 1.0 / float(mpp)
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +169,10 @@ def _feature_parts(feature: Any) -> tuple[dict | None, dict, Any]:
     geom = feature["geometry"]
     if geom is not None and not isinstance(geom, dict):
         raise ValueError("feature 'geometry' must be an object or null")
-    props = feature.get("properties") or {}
-    if not isinstance(props, dict):
+    props = feature.get("properties")
+    if props is None:
+        props = {}
+    elif not isinstance(props, dict):
         raise ValueError("feature 'properties' must be an object")
     fid = feature.get("id")
     if fid is not None and (
@@ -147,67 +182,112 @@ def _feature_parts(feature: Any) -> tuple[dict | None, dict, Any]:
     return (geom, props, fid)
 
 
-def _opt_str(props: dict, key: str) -> str | None:
-    v = props.get(key)
-    if v is None:
-        return None
-    if not isinstance(v, str):
-        raise ValueError(
-            f"property {key!r} must be a string, got {type(v).__name__}"
-        )
-    return v
+def _check_props(props: dict) -> None:
+    """The renderer reads exactly label/color/fill from properties: those
+    must be strings (or absent/null). Everything else passes through whole,
+    unchecked (M3.5)."""
+    for key in ("label", "color", "fill"):
+        v = props.get(key)
+        if v is not None and not isinstance(v, str):
+            raise ValueError(
+                f"property {key!r} must be a string, got {type(v).__name__}"
+            )
+
+
+def _take_id(used: set[str], fid: str | None) -> str:
+    """Reserve an id: ``fid`` if given, else a fresh ``aN``. Raises
+    ``ValueError`` on a collision (ids are unique across the document)."""
+    if fid is None:
+        n = 0
+        while f"a{n}" in used:
+            n += 1
+        fid = f"a{n}"
+    elif fid in used:
+        raise ValueError(f"duplicate annotation id {fid!r}")
+    used.add(fid)
+    return fid
 
 
 # ---------------------------------------------------------------------------
 # geometry expansion
 
 
-def _expand_geometry(geom: Any, scale: float) -> list[tuple[str, list]]:
-    """Yield ``(kind, scaled points)`` for each simple shape in a geometry."""
-    if not isinstance(geom, dict):
-        raise ValueError("geometry must be an object")
-    gtype = geom.get("type")
-    if gtype not in _GEOMETRY_TYPES:
-        raise ValueError(f"unsupported geometry type: {gtype!r}")
+def _expand_geometry(geom: dict, scale: float) -> list[dict]:
+    """Expand a geometry into canonical leaf geometries (level-0 px).
+
+    ``Point``/``MultiPoint``/``LineString``/``Polygon``/``MultiPolygon``
+    normalize to themselves (one leaf each); a ``GeometryCollection``
+    expands to its member leaves (recursively). Degenerate members are
+    skipped with a ``UserWarning``; an empty result means the feature is
+    dropped (the parse loop adds the feature-level warning for containers).
+    """
+    gtype = geom["type"]
     coords = geom.get("coordinates")
-    out: list[tuple[str, list]] = []
 
     if gtype == "Point":
         x, y = _coord(coords, gtype)
-        out.append(("point", [[x * scale, y * scale]]))
-    elif gtype == "MultiPoint":
-        if not isinstance(coords, list):
-            raise ValueError("MultiPoint coordinates must be a list of positions")
-        for p in coords:
-            x, y = _coord(p, gtype)
-            out.append(("point", [[x * scale, y * scale]]))
-    elif gtype == "LineString":
-        pts = _positions(coords, gtype, min_len=2)
-        if _path_length(pts) < _DEGENERATE_LENGTH:
+        return [{"type": "Point", "coordinates": [x * scale, y * scale]}]
+
+    if gtype == "MultiPoint":
+        positions = _positions(coords, gtype, min_len=0)
+        return [
+            {
+                "type": "MultiPoint",
+                "coordinates": [[x * scale, y * scale] for x, y in positions],
+            }
+        ]
+
+    if gtype == "LineString":
+        scaled = [
+            [x * scale, y * scale]
+            for x, y in _positions(coords, gtype, min_len=2)
+        ]
+        if _path_length(scaled) < _DEGENERATE_LENGTH:
             warnings.warn(
                 f"islide: skipping degenerate {gtype} annotation "
                 "(zero length)",
                 UserWarning,
             )
             return []
-        out.append(("line", [[x * scale, y * scale] for x, y in pts]))
-    elif gtype == "Polygon":
+        return [{"type": "LineString", "coordinates": scaled}]
+
+    if gtype == "Polygon":
         rings = _rings(coords, gtype, scale)
-        if rings:
-            out.append(("polygon", rings))
-    elif gtype == "MultiPolygon":
+        if rings is None:
+            warnings.warn(
+                f"islide: skipping degenerate {gtype} annotation (zero area)",
+                UserWarning,
+            )
+            return []
+        return [{"type": "Polygon", "coordinates": rings}]
+
+    if gtype == "MultiPolygon":
         if not isinstance(coords, list):
-            raise ValueError("MultiPolygon coordinates must be a list of polygons")
-        for poly in coords:
-            rings = _rings(poly, gtype, scale)
-            if rings:
-                out.append(("polygon", rings))
-    elif gtype == "GeometryCollection":
-        geoms = geom.get("geometries")
-        if not isinstance(geoms, list):
-            raise ValueError("GeometryCollection requires a 'geometries' list")
-        for g in geoms:
-            out.extend(_expand_geometry(g, scale))
+            raise ValueError(
+                "MultiPolygon coordinates must be a list of polygons"
+            )
+        islands = []
+        for island in coords:
+            rings = _rings(island, gtype, scale)
+            if rings is None:
+                warnings.warn(
+                    f"islide: skipping degenerate {gtype} annotation "
+                    "(zero area)",
+                    UserWarning,
+                )
+            else:
+                islands.append(rings)
+        return [{"type": "MultiPolygon", "coordinates": islands}] if islands else []
+
+    # GeometryCollection: expand the members (recursively).
+    geoms = geom.get("geometries")
+    if not isinstance(geoms, list):
+        raise ValueError("GeometryCollection requires a 'geometries' list")
+    out: list[dict] = []
+    for g in geoms:
+        if g is None:
+            continue
+        out.extend(_expand_geometry(g, scale))
     return out
 
 
@@ -283,7 +363,8 @@ def normalize_ring(ring: Any) -> list[list[float]] | None:
 
 
 def _rings(coords: Any, what: str, scale: float) -> list[list[list[float]]] | None:
-    """Outer + hole rings scaled to level-0 px, or ``None`` if degenerate."""
+    """Outer + hole rings scaled to level-0 px, or ``None`` if any ring is
+    degenerate (the caller decides the warning)."""
     if not isinstance(coords, list) or not coords:
         raise ValueError(f"{what}: coordinates must be a non-empty list of rings")
     # Strict structural check (the GeoJSON contract), then the shared
@@ -296,10 +377,6 @@ def _rings(coords: Any, what: str, scale: float) -> list[list[list[float]]] | No
         rings.append([[x * scale, y * scale] for x, y in pts])
     norm = [normalize_ring(r) for r in rings]
     if any(r is None for r in norm):
-        warnings.warn(
-            f"islide: skipping degenerate {what} annotation (zero area)",
-            UserWarning,
-        )
         return None
     return norm
 

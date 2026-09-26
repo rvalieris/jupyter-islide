@@ -3,12 +3,12 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M3** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
+Status: **M3.5** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
 (mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline, with a
-GeoJSON annotation overlay (points, lines, polygons — level-0 px or
-microns) that also accepts **hand-drawn polygons** (press **A**, left-click
-the vertices, **A** to save). A pure-ipywidgets HTML viewer
-(`HtmlSlideViewer`) is kept as the no-extension fallback and as the
+GeoJSON **annotation document** overlay (points, lines, polygons —
+level-0 px or microns) that also accepts **hand-drawn polygons** (press
+**A**, left-click the vertices, **A** to save). A pure-ipywidgets HTML
+viewer (`HtmlSlideViewer`) is kept as the no-extension fallback and as the
 reference pipeline.
 
 ## Install
@@ -78,15 +78,20 @@ Other constructor args: `canvas_w`, `tile_size`, `cache_max_mb` and
 `read_crop` path are unaffected).
 
 **Annotations (M2, read-only).** Import a GeoJSON document — a file path or
-a parsed dict (`FeatureCollection`, `Feature`, or bare geometry). Shapes
-render on an overlay canvas with per-feature `color`/`fill`/`label`
-properties and a toolbar alpha slider; coordinates are level-0 px by
-default or microns (`units="um"`, requires the slide's mpp):
+a parsed dict: a `FeatureCollection` of `{id, geometry, properties}`
+features (`Point`, `MultiPoint`, `LineString`, `Polygon`, `MultiPolygon`; a
+single `Feature` or a bare geometry is accepted too). The synced
+`annotations` trait holds the **canonical document** (DESIGN.md §6.3): a
+plain-JSON `FeatureCollection` in level-0 px — rings open, coordinates
+finite floats, ids assigned, `properties` kept whole. Features render on
+an overlay canvas with per-feature `color`/`fill`/`label` properties and a
+toolbar alpha slider; coordinates are level-0 px by default or microns
+(`units="um"`, requires the slide's mpp):
 
 ```python
 v.set_annotations("roi.geojson")
 v.set_annotations(doc, units="um")
-v.annotations      # normalized shape list (level-0 px)
+v.annotations      # canonical document (GeoJSON FeatureCollection, level-0 px)
 v.clear_annotations()
 ```
 
@@ -98,12 +103,12 @@ the view sends the *open* ring (no redundant closing position), unclamped
 level-0 px, as `last_polygon`; Python normalizes it with the same shared
 ring helper the importer uses (≥ 3 points, nonzero area — degenerate
 drafts are discarded with a warning, `annotations` untouched) and appends
-a `polygon` shape. Drawn shapes work everywhere imported ones do —
-e.g. `read_crop()` of the tissue under one:
+a `Polygon` *feature* to the document. Drawn features work everywhere
+imported ones do — e.g. `read_crop()` of the tissue under one:
 
 ```python
-v.annotations               # the appended polygon (fresh id, null styling)
-ring = v.annotations[-1]["points"][0]
+v.annotations["features"]    # the appended polygon (fresh id, empty properties)
+ring = v.annotations["features"][-1]["geometry"]["coordinates"][0]
 ```
 
 **Custom slide types.** If your slide library exposes the same API as
@@ -140,7 +145,7 @@ Run `examples/m3_demo.ipynb` (drawing), `examples/m2_demo.ipynb`
 islide/
   viewport.py  SlideMeta + Viewport (pure)
   plan.py      viewport -> one region read, sliced into tiles (pure)
-  annotations.py  GeoJSON document -> normalized shapes (pure)
+  annotations.py  GeoJSON document -> canonical annotation document (pure)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read, cropped)

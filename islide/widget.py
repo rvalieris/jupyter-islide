@@ -40,6 +40,10 @@ from .viewport import SlideMeta, Viewport, fit_zoom
 
 __all__ = ["SlideViewer", "HtmlSlideViewer"]
 
+# The empty canonical annotation document (DESIGN.md §6.3); the
+# `annotations` trait default, coerced through the normalizer on access.
+_EMPTY_ANNOTATION_DOC = {"type": "FeatureCollection", "features": []}
+
 
 # ---------------------------------------------------------------------------
 # M1: custom widget (canvas view in JupyterLab / Notebook 7)
@@ -116,8 +120,8 @@ class SlideViewer(widgets.DOMWidget):
     _view_name = Unicode("SlideView").tag(sync=True)
     _model_module = Unicode("jupyter-islide").tag(sync=True)
     _view_module = Unicode("jupyter-islide").tag(sync=True)
-    _model_module_version = Unicode("1.0.0").tag(sync=True)
-    _view_module_version = Unicode("1.0.0").tag(sync=True)
+    _model_module_version = Unicode("2.0.0").tag(sync=True)
+    _view_module_version = Unicode("2.0.0").tag(sync=True)
 
     # -- synced state (Python <-> JS), see DESIGN.md §7 ---------------------
     slide_open = Bool(False).tag(sync=True)
@@ -138,13 +142,25 @@ class SlideViewer(widgets.DOMWidget):
     # M3: the last drawn polygon ring (JS -> Py): an open position list in
     # unclamped level-0 px, or None (the last-event slot; DESIGN.md §6.4).
     # The Python observer is the final authority: valid ring -> append a
-    # polygon shape to `annotations` (fresh id, null styling); degenerate
-    # ring -> warn + status, no state change.
+    # polygon feature to `annotations` (fresh id, empty properties);
+    # degenerate ring -> warn + status, no state change.
     last_polygon = List(default_value=None, allow_none=True).tag(sync=True)
-    # M2: normalized annotation shapes in level-0 px (Py->JS; the JS view
-    # renders them read-only on an overlay canvas; DESIGN.md §6.3).
-    annotations = List([]).tag(sync=True)
+    # M2/M3.5: the canonical annotation document in level-0 px (Py->JS;
+    # the JS view renders it read-only on an overlay canvas; DESIGN.md
+    # §6.3): a GeoJSON FeatureCollection of {type, id, geometry,
+    # properties} features. Any assignment is coerced through the
+    # normalizer (validate below), so the trait always holds the
+    # canonical document.
+    annotations = Dict(default_value=_EMPTY_ANNOTATION_DOC).tag(sync=True)
     status = Unicode("").tag(sync=True)
+
+    @validate("annotations")
+    def _check_annotations(self, proposal):
+        """Coerce any assignment through the M3.5 normalizer."""
+        try:
+            return parse_annotations(proposal["value"])
+        except ValueError as e:
+            raise TraitError(str(e)) from e
 
     def __init__(
         self,
@@ -425,7 +441,7 @@ class SlideViewer(widgets.DOMWidget):
     # ------------------------------------------------- M2: read-only annotations
     def set_annotations(
         self, source: str | Path | dict, units: str = "px"
-    ) -> list[dict]:
+    ) -> dict:
         """Import a GeoJSON annotation document (replaces the current set).
 
         ``source`` is a GeoJSON file path or an already-parsed document
@@ -433,9 +449,12 @@ class SlideViewer(widgets.DOMWidget):
         coordinates as level-0 slide px; ``"um"`` treats them as microns
         from the slide origin and converts them with the slide's mpp
         (waits for the slide to open, and raises ``ValueError`` if the
-        slide has no mpp). Returns the normalized shape list, also stored
-        on the synced ``annotations`` trait; the JS view renders it
-        read-only.
+        slide has no mpp).
+
+        Returns the canonical annotation document (a GeoJSON
+        ``FeatureCollection`` in level-0 px of ``{id, geometry,
+        properties}`` features), also stored on the synced ``annotations``
+        trait; the JS view renders it read-only.
         """
         if isinstance(source, (str, Path)):
             doc: dict = json.loads(Path(source).read_text())
@@ -450,25 +469,25 @@ class SlideViewer(widgets.DOMWidget):
                 raise ValueError(
                     "units='um' requires the slide's mpp; this slide has none"
                 )
-        shapes = parse_annotations(doc, units=units, mpp=mpp)
-        self.annotations = shapes
-        return shapes
+        parsed = parse_annotations(doc, units=units, mpp=mpp)
+        self.annotations = parsed
+        return self.annotations
 
     def clear_annotations(self) -> None:
         """Remove all annotations (the JS overlay clears)."""
-        self.annotations = []
+        self.annotations = _EMPTY_ANNOTATION_DOC
 
     # --------------------------------------- M3: drawn polygons (JS -> Py)
     def _on_last_polygon_change(self, change: dict) -> None:
         """A drawn polygon ring arrived from the view (DESIGN.md §6.4).
 
         Normalize with the shared ring helper (the same code path imported
-        GeoJSON rings use), then either append a polygon shape to
-        ``annotations`` — fresh non-colliding id, no styling — or discard:
-        warn + status, no state change. Either way the ``last_polygon``
-        trait itself is untouched: it is a last-event slot, not a
-        collection, and appending the *updated* ``annotations`` syncs the
-        result back down.
+        GeoJSON rings use), then either append a polygon feature to
+        ``annotations`` — fresh non-colliding id, empty properties — or
+        discard: warn + status, no state change. Either way the
+        ``last_polygon`` trait itself is untouched: it is a last-event
+        slot, not a collection, and assigning the *updated* document
+        syncs the result back down.
         """
         ring = change["new"]
         if ring is None:
@@ -482,22 +501,25 @@ class SlideViewer(widgets.DOMWidget):
             )
             self.status = "Discarded: polygon needs ≥ 3 non-collinear points"
             return
-        self.annotations = [
-            *self.annotations,
-            {
-                "id": self._next_annotation_id(),
-                "kind": "polygon",
-                "points": [norm],
-                "label": None,
-                "color": None,
-                "fill": None,
-            },
-        ]
-        self.status = f"Added polygon #{self.annotations[-1]['id']}"
+        fid = self._next_annotation_id()
+        doc = self.annotations
+        self.annotations = {
+            "type": "FeatureCollection",
+            "features": [
+                *doc["features"],
+                {
+                    "type": "Feature",
+                    "id": fid,
+                    "geometry": {"type": "Polygon", "coordinates": [norm]},
+                    "properties": {},
+                },
+            ],
+        }
+        self.status = f"Added polygon #{fid}"
 
     def _next_annotation_id(self) -> str:
-        """A fresh ``aN`` id that collides with no current shape id."""
-        used = {shape.get("id") for shape in self.annotations}
+        """A fresh ``aN`` id that collides with no current feature id."""
+        used = {f.get("id") for f in self.annotations.get("features", [])}
         n = 0
         while f"a{n}" in used:
             n += 1

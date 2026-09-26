@@ -71,7 +71,7 @@ notebook, drive it from Python.
 └──────────────────────────┼──────────────────────────────────┘
                            │  viewport: {cx, cy, zoom}
                            │  tiles:    {key: b64-jpeg}   (Py ─► JS only)
-                           │  annotations: [...]           (Py ⇄ JS)
+                           │  annotations: {FC}            (Py ⇄ JS)
 ┌──────────────────────────┴──────────────────────────────────┐
 │  Kernel (Python)                                            │
 │                                                             │
@@ -207,7 +207,7 @@ frontend/
                  tileScreenRect, visibleTiles, viewportL0Bbox, …
   compositor.js  drawScene(ctx, {transform, meta, tileGeo, images}) —
                  the only place tile pixels are drawn; pure over a ctx
-  annotations.js drawAnnotations(ctx, {transform, shapes}) — M2 overlay
+  annotations.js drawAnnotations(ctx, {transform, annotations}) — M2 overlay
   polydraw.js    M3 drawing: mode state machine + drawDraftPolygon (§6.4)
   model.js       SlideModel extends DOMWidgetModel (defaults only)
   view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap)
@@ -292,52 +292,103 @@ and are rendered on a canvas overlay. No creating, editing, or deleting
 annotations in the UI (the v1 non-goal stands); polygon *drawing* lands in
 M3 (§6.4).
 
-**Import: GeoJSON, in level-0 `px` (default) or `um`**
-(`islide/annotations.py`, pure over a parsed document + mpp — same
-style as `plan.py`):
+**The annotation document** (canonical form; M3.5 supersedes the M2
+shape list — `islide/annotations.py`, pure over a parsed document + mpp,
+same style as `plan.py`): annotations are **one** normalized, restricted
+GeoJSON `FeatureCollection` — the `annotations` trait value, the wire
+format, and the export. There is no second representation and no inverse
+conversion; `v.annotations` *is* the document.
 
-- Accepted documents: a `FeatureCollection`, a single `Feature`, or a
-  bare geometry object (no properties).
-- Geometries: `Point` / `MultiPoint` → `point`, `LineString` → `line`,
-  `Polygon` / `MultiPolygon` → `polygon`, `GeometryCollection` (recursed).
-- Feature `properties` (all optional, else defaults): `color` (CSS
-  stroke/outline color, default **black**), `fill` (CSS interior fill
-  color, default **transparent** — polygons are outline-only unless a
-  fill is given; an `rgba()` string gives a translucent fill), and
-  `label` (string; drawn next to the point — M4 extends rendering to all
-  kinds, §6.5).
-- Coordinates: GeoJSON numbers are local coordinates from the slide
-  origin, **y down** (slide orientation; no CRS handling). Two unit
-  conventions, chosen at import:
-  - `units="px"` (default): coordinates are already level-0 px.
-  - `units="um"`: microns from the origin; converted to level-0 px via
-    the slide's mpp (`px = um / mpp`, one mpp for both axes — WSIs are
-    isotropic to within rounding). Physical, vendor-agnostic
-    convention: a re-scan of the same tissue keeps its annotations.
-    Requires mpp (`ValueError` otherwise).
-- Validation: strict at the document level (bad structure → `ValueError`);
-  per feature, non-finite coordinates → `ValueError`, degenerate geometry
-  (empty ring, zero area) → skipped with a warning. Coordinates outside
-  the slide are legal; drawing clips them.
+*Structure* —
 
-**Shape model** (Python-owned, Py→JS sync — M2's only direction):
-`{id, kind, points, label, color, fill}` in level-0 px, where `points` is:
-- `point`: `[[x, y]]` — a single position;
-- `line`: `[[x, y], [x, y], …]` — an open position list;
-- `polygon`: a *list of rings* (outer ring first, holes after), each ring
-  `[[x, y], …]`, stored **open** — a redundant closing position is stripped
-  at import and the renderer closes each ring when tracing, so the outline
-  covers the last→first segment. Holes are punched with an evenodd fill.
+    {"type": "FeatureCollection", "features": [Feature, …]}
+    (the empty set is `{"type": "FeatureCollection", "features": []}` —
+    the `annotations` trait default)
 
-`label`, `color`, `fill` are `null` when the feature gave none (JSON `null`
-over the wire). `null` means *"use the default"*, not *"none"*: `color`
-defaults to black, `fill` to transparent, `label` to no label — so the
-renderer treats `null` and absence identically. (`kind: "rect"` was once
-deferred to M3 with the region select that produced it; the region select
-was dropped when M3 became polygon drawing — `rect` is no longer planned,
-§6.4.)
+    Feature = {"type": "Feature",
+               "id": <string>,
+               "geometry": Point | MultiPoint | LineString
+                           | Polygon | MultiPolygon,
+               "properties": <object>}
 
-**Wire:** new trait `annotations` (Py→JS, list). The *entire* normalized
+    Point        coordinates: [x, y]
+    MultiPoint   coordinates: [[x, y], …]
+    LineString   coordinates: [[x, y], …]      (≥ 2 positions)
+    Polygon      coordinates: [ring, …]        (ring 0 = outer, rest = holes)
+    MultiPolygon coordinates: [[ring, …], …]   (one polygon per island,
+                                                 each with its own holes)
+    ring         [[x, y], …]  stored **open**
+
+`GeometryCollection` is **not** in the canonical form: it is a recursive
+heterogeneous *container*, not a flat geometry — a mixed Point +
+LineString + Polygon feature has no coherent one-annotation semantics,
+and GC-in-GC makes depth unbounded. It is accepted at import and expanded.
+
+*Semantics* —
+
+- Coordinates: level-0 slide px, floats, origin at the slide origin,
+  **y down** (slide orientation; no CRS handling), unclamped —
+  off-slide coordinates are legal, the renderer culls them. A position's
+  third component (z) is dropped at import.
+- **One feature = one annotation**: one id, one `properties` bag, one
+  draw / hit-test / select / edit unit. A `MultiPolygon` is one
+  annotation spanning several islands (one label, one color, one
+  delete), not several — the evenodd fill and hit-test treat all its
+  rings as one parity region.
+- `id`: unique string across the collection, stable for the document's
+  lifetime — assigned once at import (or on draw, M3), never renumbered
+  by edits. This is the *whole* role ids play: M4's selection
+  (`selectedId`) and edit commands address features by id across the
+  Py⇄JS round trip. Rendering, culling, and draw order are list-order,
+  not id-keyed.
+- `properties`: arbitrary string keys/values pass through untouched.
+  The viewer recognizes `label` (string), `color` (CSS stroke/outline
+  color, default **black**), and `fill` (CSS interior fill, default
+  **transparent** — polygons are outline-only unless a fill is given;
+  an `rgba()` string gives a translucent fill). `null`/absence mean
+  *"use the default"*, not *"none"* — the renderer treats them
+  identically.
+
+*Invariants* — every document the viewer produces satisfies these (which
+is what keeps the renderer's per-feature guard a one-line `continue`):
+
+- `Point` / `MultiPoint`: finite positions;
+- `LineString`: ≥ 2 finite positions, length ≥ 1e-6 px;
+- `Polygon` / `MultiPolygon`: each ring ≥ 3 finite, non-collinear
+  positions (area ≥ 1e-6 px²), stored open; a `MultiPolygon` keeps ≥ 1
+  island.
+
+*Import normalization* (the only place any conversion in the system
+lives):
+
+- Inputs: a `FeatureCollection`, a single `Feature`, or a bare geometry
+  object (no properties), **any of the six GeoJSON geometry types**;
+  strict structural validation (bad structure or non-finite coordinates
+  → `ValueError`).
+- **Structure-preserving**: geometry type and nesting are never
+  changed — only coordinate *values* are normalized (floats, open rings),
+  degenerate members dropped, ids/`properties` normalized. GeoJSON in →
+  same-structure GeoJSON out (modulo dropped degenerates), so the stored
+  document reads back to its source's shape.
+- Units, chosen at import: `units="px"` (default) — coordinates already
+  level-0 px; `units="um"` — microns from the origin, converted to
+  level-0 px via the slide's mpp (`px = um / mpp`, one mpp for both
+  axes — WSIs are isotropic to within rounding). Physical,
+  vendor-agnostic convention: a re-scan of the same tissue keeps its
+  annotations. Requires mpp (`ValueError` otherwise).
+- Degenerates (same thresholds as the M2 parser): a `MultiPolygon` loses
+  degenerate islands (warning); a feature left with nothing is dropped
+  (warning); a `Polygon` with any degenerate ring — including a hole —
+  is dropped (warning); a `LineString` below the length threshold is
+  dropped (warning).
+- ids: the feature's `id` (str/int/float → `str`) when present, else a
+  fresh `aN`; **uniqueness enforced** — a collision is a `ValueError`
+  (fixes the M2 latent bug: a `Multi*` / `GeometryCollection` feature's
+  id was stamped on *every* shape it expanded to).
+- `properties` kept whole; a non-string `label` / `color` / `fill` is a
+  `ValueError` (as M2).
+
+**Wire:** new trait `annotations` (Py→JS, dict — the document). The *entire* normalized
 set is sent once at import — deliberately **not** filtered by viewport in
 Python: the JS local transform is the authoritative viewport at frame time
 and Python's copy is ≥120 ms stale, so viewport-filtered pushes would make
@@ -351,21 +402,28 @@ after a kernel restart just like the tiles.
 **Rendering** (second `#annotations` canvas, §6.1; same size/DPR as the
 image canvas, drawn after the tiles):
 
-- **Culling:** shapes whose bbox does not intersect the current viewport
-  are not rendered (checked per frame against the local transform).
-- Screen-constant styling (does **not** scale with zoom): polygons with
-  a 1.5 px stroke (`color`, default black) and interior `fill` (default
-  transparent); lines at 1.5 px in `color`; points as filled circles of
-  ~4 px radius (body: `fill` if given, else `color`) with a white halo
-  for contrast on tissue.
+- **Culling:** features whose bbox does not intersect the current
+  viewport are not rendered (checked per frame against the local
+  transform).
+- Screen-constant styling (does **not** scale with zoom), per feature,
+  three primitives: *markers* — `Point` / `MultiPoint`, one filled circle
+  per position (~4 px radius; body `fill` if given, else `color`; white
+  halo for contrast on tissue); *open path* — `LineString`, 1.5 px in
+  `color`; *evenodd ring-set* — `Polygon` / `MultiPolygon` (a
+  `MultiPolygon`'s islands flatten into the same ring set), one path over
+  all rings, interior `fill` (default transparent; evenodd so holes cut
+  through) and a 1.5 px `color` outline (default black).
 - **Alpha:** a toolbar slider (0–1, default 1) sets the overlay's
   `globalAlpha`, fading the whole annotation layer. View-local display
   state, not a trait (resets on restart, like the local transform).
-- Labels: 12 px screen-space text next to the point, only when `label`
-  is set (M4: any kind, drawn at the first vertex — §6.5).
+- Labels: 12 px screen-space text at the feature's first vertex (a
+  `Point`'s position — the M2 next-to-the-point placement), only when
+  `label` is set (M4: any kind — §6.5).
 - Pure module `frontend/annotations.js`
-  (`drawAnnotations(ctx, {transform, shapes, alpha})`), unit-tested
-  against a mock ctx like the compositor.
+  (`drawAnnotations(ctx, {transform, annotations, alpha})`), unit-tested
+  against a mock ctx like the compositor; a malformed feature is skipped
+  (the one-line per-feature guard the document invariants make
+  possible).
 
 **Python API:**
 
@@ -373,7 +431,7 @@ image canvas, drawn after the tiles):
 v.set_annotations("roi.geojson")     # str / Path, or a parsed dict
 v.set_annotations(doc, units="um")   # coordinates in microns (requires mpp)
 v.clear_annotations()
-v.annotations      # the normalized shape list (level-0 px)
+v.annotations      # the normalized document (FeatureCollection, level-0 px)
 ```
 
 `set_annotations` replaces the current set and waits for the slide if
@@ -383,9 +441,9 @@ needed (the `um` conversion requires mpp).
 or delete — polygon drawing is M3, §6.4; select/delete/label/recolor is
 M4, §6.5); annotation hit-testing, hover, and tooltips (M4 adds
 click hit-testing + selection, §6.5; hover and tooltips stay out);
-per-feature visibility; annotation export (the GeoJSON file is the
-source of truth); `HtmlSlideViewer` annotations (canvas view only, M0
-fallback untouched).
+per-feature visibility; annotation export as an API (there is none —
+the document *is* `v.annotations`, §6.3; `json.dump` is the export);
+`HtmlSlideViewer` annotations (canvas view only, M0 fallback untouched).
 
 ### 6.4 Polygon drawing (M3)
 
@@ -455,12 +513,13 @@ re-fires in-process). The Python `observe()` handler then:
    `normalize_ring`-style helper, so drawn and imported rings can't drift
    apart);
 2. invalid → `warnings.warn` + status, no state change;
-3. valid → append `{id, kind: "polygon", points: [ring], label: null,
-   color: null, fill: null}` to `self.annotations` (a fresh id that does
-   not collide with the current set) and push the `annotations` trait.
-   From then on the shape is indistinguishable from an imported one: same
-   defaults (black stroke, transparent fill), same renderer, same
-   `clear_annotations()`.
+3. valid → append a `Polygon` **feature** to `self.annotations`'s
+   `features` — `{"id": <fresh, non-colliding>, "geometry":
+   {"type": "Polygon", "coordinates": [ring]}, "properties": {}}` —
+   and push the `annotations` trait. From then on the feature is
+   indistinguishable from an imported one: same defaults (empty
+   `properties` = black stroke, transparent fill, §6.3), same renderer,
+   same `clear_annotations()`.
 
 "Closing the first and last point" is the M2 renderer's existing behavior
 (rings are stored open, closed when traced), so the saved shape needs no
@@ -479,7 +538,7 @@ tooltips stay out); annotation export; keyboard beyond A/Esc; touch;
 M4 is **editing**: a shape that already exists — imported (M2) or drawn
 (M3) — can be selected in the view and deleted, labeled, or recolored.
 No geometry editing: no per-shape move, resize, or vertex edit (the §2
-non-goal stands); `points` only change by re-importing.
+non-goal stands); `coordinates` only change by re-importing.
 
 **Annotate button.** M3's drawing mode was keyboard-only. M4 gives it a
 toolbar toggle button, **annotate** (pressed while drawing): the visible
@@ -491,14 +550,17 @@ mode in its pressed state.
 a drag — the same ≥ 4 CSS px threshold as M3) hit-tests the annotation
 set at the cursor, in screen space under the local transform:
 
-- Hit-testing is per kind: `point` — within ~8 px of the marker center
-  (the 4 px radius + halo + slack); `line` — within ~6 px of any
-  segment; `polygon` — point-in-polygon under evenodd (holes are no
-  hits; a click on the outline hits, since the outline is inside).
-  Topmost (last in list order, matching draw order) wins. Pure
-  `hitTest(shapes, transform, x, y) -> id | null` in `annotations.js`
-  (reuses the module's shape helpers; mock-ctx-tested like the rest of
-  it).
+- Hit-testing is per geometry: `Point` / `MultiPoint` — within ~8 px of
+  any marker position (the 4 px radius + halo + slack); `LineString` —
+  within ~6 px of any segment; `Polygon` / `MultiPolygon` —
+  point-in-polygon under evenodd parity over all rings (holes are no
+  hits; a click on the outline hits, since the outline is inside; a
+  `MultiPolygon`'s islands are just more rings of the *same* feature —
+  a click inside any island hits it). Topmost (last feature in list
+  order, matching draw order) wins. Pure
+  `hitTest(annotations, transform, x, y) -> id | null` in
+  `annotations.js` (reuses the module's feature helpers; mock-ctx-tested
+  like the rest of it).
 - Hit → **select**: a view-local `selectedId` is set — like the local
   transform, the alpha slider, and the M3 draft, not a trait; Python
   never sees the selection, only the edit commands. The selected shape
@@ -552,11 +614,12 @@ null | {op: "delete",  id}
 The view is the sole writer, saving per command (`model.set` +
 `model.save()`, as M3's `last_polygon`); the trait holds the *last
 issued* command, not cleared (same convention). The Python `observe()`
-handler applies it with a pure `apply_edit(shapes, cmd)` in
-`annotations.py` — a new list, or `None` when the id is unknown (no
+handler applies it with a pure `apply_edit(doc, cmd)` in
+`annotations.py` — a new document, or `None` when the id is unknown (no
 state change, `status` = `edit ignored: unknown annotation id` — the id
 may be stale if a Python-side `set_annotations()` replace raced the
-click) — normalizes (`set_label`: `""` / whitespace-only → `null`;
+click) — `delete` removes the feature, `set_label` / `set_color` mutate
+its `properties` (`set_label`: `""` / whitespace-only → `null`;
 `set_color`: values pass through as given; `null` keeps the M2
 *use-the-default* convention — black stroke, transparent fill) and pushes
 the whole updated set on `annotations` (the M2 wire rule: whole set, no
@@ -610,6 +673,7 @@ img = v.read_crop(bbox)        # PIL Image at level 0 (RGBA)
 # annotations (M2)
 v.set_annotations("roi.geojson")   # level-0 px (default); units="um" for microns (needs mpp)
 v.clear_annotations()
+v.annotations                     # the normalized document — the GeoJSON export itself (§6.3)
 
 # M3: draw a polygon in the view — key A, left-click the vertices,
 # key A again saves it into v.annotations (no programmatic API)
@@ -639,7 +703,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
-| `annotations` | Py→JS | list | normalized shapes in level-0 px (`{id, kind, points, label, color, fill}`); M2: imported set, M3: drawn polygons appended (§6.4) |
+| `annotations` | Py→JS | dict | the normalized annotation document — a restricted GeoJSON `FeatureCollection` in level-0 px (§6.3); M2: imported set, M3: drawn polygons appended (§6.4) |
 | `last_polygon` | JS→Py | list | M3: the just-saved drawn polygon — open ring `[[x, y], …]`, level-0 px (`null` = none yet); Python validates and appends the shape to `annotations` |
 | `annotation_edit` | JS→Py | dict | M4: the last issued edit command — `{op: "delete" \| "set_label" \| "set_color", id, …}` (`null` = none yet); Python applies it to `annotations` and pushes the updated set (§6.5) |
 | `status` | Py→JS | str | status line (open progress / error / last render's level·tile info; the live zoom·µm/px is the JS readout's) |
@@ -728,6 +792,7 @@ fetch pass.
 | M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor/draw state + headless widget tests; the extension build path is documented, see §11). | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
 | M2 ✅ | **Read-only annotations** *(done)*. GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing (M3 adds polygon *drawing*, §6.4). | `examples/m2_demo.ipynb`: `set_annotations` (inline GeoJSON, level-0 px + microns) + smooth pan/zoom over the overlay |
 | M3 ✅ | **Polygon drawing** *(done)*. Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, wheel/minimap live); M1's double-click zoom gesture is removed (unnecessary); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. Tile JPEG quality becomes a constructor argument (`jpeg_quality`, default 85; the §5.3 PNG fallback is dropped — exact pixels via `read_crop()`). | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
+| M3.5 | **Canonical GeoJSON annotation format.** The M2/M3 flat shape list becomes the annotation document of §6.3: the `annotations` trait is a `Dict` (empty-`FeatureCollection` default; trait assignment coerced through the normalizer); `set_annotations(doc, units)` keeps its contract — validate → normalize → assign → push — and the stored/returned value *is* the document; the `last_polygon` observer appends a `Polygon` feature (fresh non-colliding id, empty `properties`); the renderer iterates features over three primitives (markers / open path / evenodd ring-set) and reads `label`/`color`/`fill` from `properties`. `MultiPoint` / `MultiPolygon` stay whole; `GeometryCollection` expands at import; degenerate members drop with warnings; ids unique (collision → `ValueError`) and stable — fixing the M2 duplicate-id bug. Wire-contract change: module version 1.0.0 → 2.0.0 + labextension rebuild; the `last_polygon` and planned `annotation_edit` contracts are unchanged. | `tests/test_annotations.py` (canonical document over all six source geometry types; units; degenerate drops; id uniqueness; `properties` pass-through), `test_widget_m2.py` / `test_widget_m3.py` (document trait; `last_polygon` appends a feature), `frontend/test/annotations.test.js` (three primitives; per-feature guard); `examples/m2_demo.ipynb` + `m3_demo.ipynb`: same behavior, `v.annotations` is the document |
 | M4 | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
 | M5 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
@@ -780,9 +845,25 @@ fetch pass.
   Contract: `last_polygon` added to `defaults.js` and
   `last_click`/`last_region` removed from both sides — covered by the
   existing cross-language name guard.
+- **M3.5 canonical-form tests:** Python (`tests/test_annotations.py`,
+  rewritten for the new output): the canonical document over all six
+  source geometry types — `MultiPoint` / `MultiPolygon` kept whole,
+  `GeometryCollection` expanded, `properties` pass-through (unknown keys
+  preserved), ids unique (collision now `ValueError` — the M2
+  duplicate-stamp bug), units, degenerate drops (islands, rings, short
+  lines) with warnings, bare-geometry + single-Feature inputs. Headless
+  widget (`tests/test_widget_m2.py` / `test_widget_m3.py`): `annotations`
+  is the document (empty-FC default, `set_annotations` replace semantics,
+  wait-for-open); `last_polygon` appends a `Polygon` feature (fresh
+  non-colliding id, empty `properties`). JS
+  (`frontend/test/annotations.test.js`): the three draw primitives
+  (markers incl. `MultiPoint` loops, open path, evenodd ring-set incl.
+  flattened `MultiPolygon` islands), `properties` styling, per-feature
+  guard (a malformed feature is skipped, the rest still draw).
 - **M4 annotation-edit tests:** Python headless
-  (`tests/test_widget_m4.py`): `apply_edit` pure over the shape list
-  (delete removes exactly the matching id, order preserved; `set_label`
+  (`tests/test_widget_m4.py`): `apply_edit` pure over the document
+  (delete removes exactly the matching feature, order preserved;
+  `set_label`
   sets / clears (`""` / whitespace-only → `null`); `set_color` sets
   stroke and/or fill incl. resetting to the `null` defaults; unknown id
   → no state change, input list untouched); setting the
@@ -822,7 +903,7 @@ islide/
 │   ├── widget.py             # M1 DOMWidget + M0 HTML viewer + state machine
 │   ├── backend.py            # SlideBackend protocol, OpenSlideBackend
 │   ├── plan.py               # viewport -> read plan (pure)
-│   ├── annotations.py        # GeoJSON -> normalized shapes (pure, M2)
+│   ├── annotations.py        # GeoJSON -> normalized annotation document (pure)
 │   ├── viewport.py           # SlideMeta + Viewport (pure)
 │   ├── cache.py              # TileCache
 │   ├── fetch.py              # plan -> tiles (cache + one read, cropped)
@@ -884,5 +965,8 @@ standard JupyterLab 4 labextensions discovery path. So:
    mode" to **polygon drawing only** (§6.4): no callbacks, no
    point/line/region features, and the reserved `last_click`/`last_region`
    traits are removed from the contract; M4 = **annotation editing**
-   (selection + del / label / color, §6.5); polish & ship moved to M5.
-   *M2 done; M3 re-scoped as proposed.*
+   (selection + del / label / color, §6.5); M3.5 inserted: the M2/M3
+   shape-list store becomes the canonical annotation document (§6.3) —
+   the `annotations` trait's type changes (wire break: module version
+   bump); polish & ship moved to M5. *M2 done; M3 re-scoped as
+   proposed; M3.5 as proposed.*
