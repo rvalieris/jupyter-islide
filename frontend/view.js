@@ -65,7 +65,7 @@ export class SlideView extends DOMWidgetView {
     this.el.classList.add('islide-view');
     this.el.innerHTML = `
       <div class="islide-canvas-wrap">
-        <canvas class="islide-canvas"></canvas>
+        <canvas class="islide-canvas" data-jp-suppress-context-menu></canvas>
         <canvas class="islide-annotations"></canvas>
         <div class="islide-minimap">
           <img class="islide-minimap-img" alt="minimap"/>
@@ -280,6 +280,14 @@ export class SlideView extends DOMWidgetView {
 
   // ---------------------------------------------------------------- events
   _bindEvents() {
+    // The right mouse button is a pan gesture on the canvas (both idle and
+    // drawing modes), so keep context menus out of it. JupyterLab decides
+    // via `event.target.closest('[data-jp-suppress-context-menu]')` (see
+    // the attribute on the canvas) before opening its menu, which is why
+    // this preventDefault alone does not stop it; it also covers older
+    // JupyterLab versions and the browser's native menu.
+    this._canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
     // M3 keyboard (DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
     // it. While the alpha input has focus its keys are left alone.
     this.el.addEventListener('keydown', (e) => {
