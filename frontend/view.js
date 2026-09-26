@@ -15,6 +15,10 @@ import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
 import { drawScene } from './compositor.js';
 import { drawAnnotations } from './annotations.js';
+import {
+  CLICK_THRESHOLD_PX, MODE_DRAWING, drawDraftPolygon,
+  polyDrawInit, polyEvent,
+} from './polydraw.js';
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
@@ -33,6 +37,10 @@ export class SlideView extends DOMWidgetView {
     this._dragging = null;
     this._cursor = null; // canvas-relative pointer pos, drives the l0 readout
     this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
+    // M3 polygon drawing (DESIGN.md §6.4): local drawing state (never
+    // synced); `last_polygon` is the only JS->Py write.
+    this._poly = polyDrawInit();
+    this._localStatus = null; // view-local status line, overrides the trait
 
     // Must exist before _buildDom(): that is where observe(this._canvas)
     // happens, and only the RO keeps the transform (and hence the tile
@@ -88,6 +96,10 @@ export class SlideView extends DOMWidgetView {
     this._readout = this.el.querySelector('.islide-readout');
     this._cursorEl = this.el.querySelector('.islide-cursor');
     this._status = this.el.querySelector('.islide-status');
+    // M3: keyboard-driven drawing — the root holds keyboard focus (a click
+    // on the canvas area focuses the nearest focusable ancestor, this
+    // div); see the keydown binding in _bindEvents.
+    this.el.tabIndex = 0;
     if (this._resizeObserver) {
       this._resizeObserver.observe(this._canvas);
     }
@@ -155,7 +167,28 @@ export class SlideView extends DOMWidgetView {
   }
 
   _onStatusChange() {
-    this._status.textContent = this.model.get('status');
+    this._updateStatus();
+  }
+
+  /** View-local status line (M3 drawing messages); overrides the trait. */
+  _setLocalStatus(text) {
+    this._localStatus = text;
+    this._updateStatus();
+  }
+
+  /** Stale drawing messages (cancel/discard) clear on the next interaction.
+   */
+  _clearLocalStatusIfIdle() {
+    if (this._poly.mode !== MODE_DRAWING && this._localStatus !== null) {
+      this._localStatus = null;
+      this._updateStatus();
+    }
+  }
+
+  _updateStatus() {
+    this._status.textContent = this._localStatus !== null
+      ? this._localStatus
+      : (this.model.get('status') || '');
   }
 
   /**
@@ -247,8 +280,22 @@ export class SlideView extends DOMWidgetView {
 
   // ---------------------------------------------------------------- events
   _bindEvents() {
+    // M3 keyboard (DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
+    // it. While the alpha input has focus its keys are left alone.
+    this.el.addEventListener('keydown', (e) => {
+      if (e.target === this._alphaInput) return;
+      if (e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        this._toggleDrawMode();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this._cancelDrawMode();
+      }
+    });
+
     this._canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      this._clearLocalStatusIfIdle();
       if (!this._transform) return;
       const factor = Math.exp(-e.deltaY * 0.002);
       const rect = this._canvas.getBoundingClientRect();
@@ -265,13 +312,26 @@ export class SlideView extends DOMWidgetView {
     this._canvas.addEventListener('pointerdown', (e) => {
       if (!this._transform) return;
       this._canvas.setPointerCapture(e.pointerId);
-      this._dragging = { x: e.clientX, y: e.clientY, moved: false };
+      // M3 click vs pan: a pointerup within ~4 CSS px of the pointerdown is
+      // a click (a draft vertex in drawing mode); beyond that the gesture
+      // is a pan (left or right drag).
+      this._dragging = {
+        x: e.clientX, y: e.clientY,
+        sx: e.clientX, sy: e.clientY,
+        button: e.button,
+        moved: false,
+      };
     });
     this._canvas.addEventListener('pointermove', (e) => {
       const rect = this._canvas.getBoundingClientRect();
       this._cursor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       this._updateCursorReadout();
-      if (!this._dragging || !this._transform) return;
+      if (!this._dragging || !this._transform) {
+        // Not panning: in drawing mode the dashed closure segments track
+        // the cursor, so repaint on every move.
+        if (this._poly.mode === MODE_DRAWING) this._requestDraw();
+        return;
+      }
       const dx = e.clientX - this._dragging.x;
       const dy = e.clientY - this._dragging.y;
       this._dragging.x = e.clientX;
@@ -282,9 +342,21 @@ export class SlideView extends DOMWidgetView {
     });
     const endDrag = (e) => {
       if (!this._dragging) return;
-      const moved = this._dragging.moved;
+      const d = this._dragging;
       this._dragging = null;
-      if (moved) this._scheduleSync();
+      const dist = Math.hypot(e.clientX - d.sx, e.clientY - d.sy);
+      if (d.moved) this._scheduleSync();
+      if (dist < CLICK_THRESHOLD_PX && d.button === 0
+          && this._poly.mode === MODE_DRAWING && this._transform) {
+        // A still left click in drawing mode: append the cursor's slide
+        // position (unclamped level-0 px) as the next draft vertex.
+        const rect = this._canvas.getBoundingClientRect();
+        const [x, y] = math.screenToL0(
+          this._transform, e.clientX - rect.left, e.clientY - rect.top);
+        this._poly = polyEvent(this._poly, { type: 'vertex', x, y }).state;
+        this._requestDraw();
+      }
+      this._clearLocalStatusIfIdle();
       // Touch pointers vanish on release: nothing is hovering anymore.
       if (e.pointerType !== 'mouse') {
         this._cursor = null;
@@ -296,19 +368,7 @@ export class SlideView extends DOMWidgetView {
     this._canvas.addEventListener('pointerleave', () => {
       this._cursor = null;
       this._updateCursorReadout();
-    });
-
-    this._canvas.addEventListener('dblclick', (e) => {
-      if (!this._transform) return;
-      const rect = this._canvas.getBoundingClientRect();
-      const [minZoom, maxZoom] = this._zoomBounds();
-      this._transform = math.zoomAtCursor(
-        this._transform, 2,
-        e.clientX - rect.left, e.clientY - rect.top,
-        minZoom, maxZoom,
-      );
-      this._requestDraw();
-      this._scheduleSync();
+      if (this._poly.mode === MODE_DRAWING) this._requestDraw();
     });
 
     const bar = this.el.querySelector('.islide-toolbar');
@@ -340,7 +400,42 @@ export class SlideView extends DOMWidgetView {
     });
   }
 
+  // -------------------------------------------------- M3 polygon drawing
+  _toggleDrawMode() {
+    const entering = this._poly.mode !== MODE_DRAWING;
+    if (entering && !this.model.get('slide_open')) {
+      // A before the slide is open: no-op with a reason.
+      this._setLocalStatus('Slide not open');
+      return;
+    }
+    const { state, result } = polyEvent(this._poly, { type: 'toggle' });
+    this._poly = state;
+    this._canvas.classList.toggle('islide-drawing', state.mode === MODE_DRAWING);
+    if (result && result.op === 'save') {
+      // JS->Py last-event wire (DESIGN.md §6.4): open ring, level-0 px,
+      // unclamped. Python normalizes, appends, and reports via `status`.
+      this.model.set('last_polygon', result.ring);
+      this.model.save();
+      this._setLocalStatus(null);
+    } else if (result && result.op === 'discard') {
+      this._setLocalStatus('Discarded: polygon needs ≥ 3 non-collinear points');
+    } else {
+      this._setLocalStatus('Polygon: click to add points — A saves, Esc cancels');
+    }
+    this._requestDraw();
+  }
+
+  _cancelDrawMode() {
+    const { state, result } = polyEvent(this._poly, { type: 'cancel' });
+    if (!result) return;
+    this._poly = state;
+    this._canvas.classList.toggle('islide-drawing', false);
+    this._setLocalStatus('Polygon cancelled');
+    this._requestDraw();
+  }
+
   _toolbarAction(action) {
+    this._clearLocalStatusIfIdle();
     const t = this._transform;
     const meta = this.model.get('meta');
     const [minZoom, maxZoom] = this._zoomBounds();
@@ -372,6 +467,7 @@ export class SlideView extends DOMWidgetView {
   }
 
   _minimapJump(e) {
+    this._clearLocalStatusIfIdle();
     const meta = this.model.get('meta');
     const t = this._transform;
     if (!meta || !t) return;
@@ -451,6 +547,16 @@ export class SlideView extends DOMWidgetView {
       shapes: this.model.get('annotations') || [],
       alpha: this._annotAlpha,
     });
+    // M3: the in-progress polygon draft, on top of the imported shapes,
+    // under the same alpha slider (DESIGN.md §6.4).
+    if (this._poly.mode === MODE_DRAWING) {
+      drawDraftPolygon(actx, {
+        transform: t,
+        draft: this._poly.draft,
+        cursor: this._cursor,
+        alpha: this._annotAlpha,
+      });
+    }
   }
 
   _layoutMinimap() {

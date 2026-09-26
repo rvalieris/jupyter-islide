@@ -1,7 +1,7 @@
 """jupyter-islide — interactive whole-slide pathology image viewer for Jupyter."""
 from importlib.metadata import PackageNotFoundError, version
 
-from .annotations import parse_annotations
+from .annotations import normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, SlideBackend
 from .cache import TileCache
 from .plan import ReadPlan, Tile, plan_viewport, select_level
@@ -27,6 +27,7 @@ except PackageNotFoundError:  # package not installed (e.g. running from source)
 __all__ = [
     "SlideViewer",
     "parse_annotations",
+    "normalize_ring",
     "HtmlSlideViewer",
     "SlideMeta",
     "Viewport",

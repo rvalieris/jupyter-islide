@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import threading
+import warnings
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from typing import Any
 import ipywidgets as widgets
 from traitlets import Bool, Dict, Int, List, TraitError, Unicode, validate
 
-from .annotations import parse_annotations
+from .annotations import normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
 from .encode import jpeg_data_url
@@ -134,8 +135,12 @@ class SlideViewer(widgets.DOMWidget):
     tiles = Dict({}).tag(sync=True)  # "L:tx:ty" -> JPEG data URL
     tile_geo = Dict({}).tag(sync=True)  # "L:tx:ty" -> [level, ox, oy, cw, ch]
     minimap_img = Unicode("").tag(sync=True)  # whole-slide overview data URL
-    last_click = Dict({}).tag(sync=True)  # {"x": .., "y": ..} level-0 px
-    last_region = Dict({}).tag(sync=True)  # {"x": .., "y": .., "w": .., "h": ..}
+    # M3: the last drawn polygon ring (JS -> Py): an open position list in
+    # unclamped level-0 px, or None (the last-event slot; DESIGN.md §6.4).
+    # The Python observer is the final authority: valid ring -> append a
+    # polygon shape to `annotations` (fresh id, null styling); degenerate
+    # ring -> warn + status, no state change.
+    last_polygon = List(default_value=None, allow_none=True).tag(sync=True)
     # M2: normalized annotation shapes in level-0 px (Py->JS; the JS view
     # renders them read-only on an overlay canvas; DESIGN.md §6.3).
     annotations = List([]).tag(sync=True)
@@ -150,17 +155,35 @@ class SlideViewer(widgets.DOMWidget):
         cache_max_mb: int = 256,
         *,
         slide: Any | None = None,
+        jpeg_quality: int = 85,
     ) -> None:
         """Create a viewer from a file path, or from an already-opened
-        openslide-compatible object (``slide=``; exactly one of the two)."""
+        openslide-compatible object (``slide=``; exactly one of the two).
+
+        ``jpeg_quality`` (1–95) is the JPEG quality of the tile data URLs
+        (the minimap/thumbnail keep the default 85).
+        """
         super().__init__()
+        # Teardown state before anything that can raise, so __del__/close()
+        # stay safe on a half-constructed widget.
+        self._closed = False
+        self._open_thread: threading.Thread | None = None
+        self.backend: OpenSlideBackend | None = None
+        try:
+            q = int(jpeg_quality)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"jpeg_quality must be an int in 1..95, got {jpeg_quality!r}"
+            ) from e
+        if not 1 <= q <= 95:
+            raise ValueError(f"jpeg_quality must be in 1..95, got {jpeg_quality!r}")
         slide_obj, self.path = _require_slide_source(path, slide)
         self._initial_slide = slide_obj
+        self._jpeg_quality = q
         self._canvas_w = int(canvas_w)
         self.canvas_h = int(canvas_h)
         self.tile_size = int(tile_size)
         self.cache = TileCache(int(cache_max_mb * 1024 * 1024))
-        self.backend: OpenSlideBackend | None = None
         self._meta: SlideMeta | None = None
         self._min_zoom = 1e-9
         self._max_zoom = 16.0
@@ -169,7 +192,6 @@ class SlideViewer(widgets.DOMWidget):
         self._rendering_bg = False
         self._render_dirty = False
         self._syncing_viewport = False
-        self._closed = False
         self.status = "opening slide…"
         self._open_thread = threading.Thread(
             target=self._open, name="islide-open", daemon=True
@@ -177,6 +199,7 @@ class SlideViewer(widgets.DOMWidget):
         self._open_thread.start()
         self.observe(self._on_viewport_change, names="viewport")
         self.observe(self._on_canvas_h_change, names="canvas_h")
+        self.observe(self._on_last_polygon_change, names="last_polygon")
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
@@ -232,7 +255,8 @@ class SlideViewer(widgets.DOMWidget):
         if self._closed:
             return
         self._closed = True
-        self._open_thread.join()  # let the open (or its failure) settle
+        if self._open_thread is not None:
+            self._open_thread.join()  # let the open (or its failure) settle
         self.slide_open = False
         if self.backend is not None:
             self.backend.close()
@@ -336,7 +360,7 @@ class SlideViewer(widgets.DOMWidget):
             k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
             x0, y0, x1, y1 = t.crop
             geo[k] = [t.key[0], rx + x0, ry + y0, x1 - x0, y1 - y0]
-            urls[k] = jpeg_data_url(tiles[t.key])
+            urls[k] = jpeg_data_url(tiles[t.key], self._jpeg_quality)
         self.tiles = urls
         self.tile_geo = geo
         # Pipeline info only: the live zoom + µm/px belong to the JS
@@ -433,6 +457,51 @@ class SlideViewer(widgets.DOMWidget):
     def clear_annotations(self) -> None:
         """Remove all annotations (the JS overlay clears)."""
         self.annotations = []
+
+    # --------------------------------------- M3: drawn polygons (JS -> Py)
+    def _on_last_polygon_change(self, change: dict) -> None:
+        """A drawn polygon ring arrived from the view (DESIGN.md §6.4).
+
+        Normalize with the shared ring helper (the same code path imported
+        GeoJSON rings use), then either append a polygon shape to
+        ``annotations`` — fresh non-colliding id, no styling — or discard:
+        warn + status, no state change. Either way the ``last_polygon``
+        trait itself is untouched: it is a last-event slot, not a
+        collection, and appending the *updated* ``annotations`` syncs the
+        result back down.
+        """
+        ring = change["new"]
+        if ring is None:
+            return
+        norm = normalize_ring(ring)
+        if norm is None:
+            warnings.warn(
+                "islide: discarding drawn polygon "
+                "(needs >= 3 non-collinear finite points)",
+                UserWarning,
+            )
+            self.status = "Discarded: polygon needs ≥ 3 non-collinear points"
+            return
+        self.annotations = [
+            *self.annotations,
+            {
+                "id": self._next_annotation_id(),
+                "kind": "polygon",
+                "points": [norm],
+                "label": None,
+                "color": None,
+                "fill": None,
+            },
+        ]
+        self.status = f"Added polygon #{self.annotations[-1]['id']}"
+
+    def _next_annotation_id(self) -> str:
+        """A fresh ``aN`` id that collides with no current shape id."""
+        used = {shape.get("id") for shape in self.annotations}
+        n = 0
+        while f"a{n}" in used:
+            n += 1
+        return f"a{n}"
 
 
 # ---------------------------------------------------------------------------

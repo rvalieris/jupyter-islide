@@ -1,6 +1,6 @@
 {
   "name": "jupyter-islide",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "JupyterLab extension providing the canvas view (islide.SlideView) for the islide whole-slide viewer",
   "license": "MIT",
   "main": "index.js",
@@ -22,6 +22,7 @@
     "tilemath.js",
     "compositor.js",
     "annotations.js",
+    "polydraw.js",
     "defaults.js",
     "labextension.js",
     "style/*.css"

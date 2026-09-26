@@ -12,8 +12,7 @@ export const SLIDE_MODEL_DEFAULTS = {
   tiles: {},
   tile_geo: {},
   minimap_img: '',
-  last_click: {},
-  last_region: {},
+  last_polygon: null,
   annotations: [],
   status: '',
 };

@@ -3,11 +3,13 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M2** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
+Status: **M3** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
 (mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline, with a
-read-only GeoJSON annotation overlay (points, lines, polygons — level-0 px
-or microns). A pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is kept as
-the no-extension fallback and as the reference pipeline.
+GeoJSON annotation overlay (points, lines, polygons — level-0 px or
+microns) that also accepts **hand-drawn polygons** (press **A**, left-click
+the vertices, **A** to save). A pure-ipywidgets HTML viewer
+(`HtmlSlideViewer`) is kept as the no-extension fallback and as the
+reference pipeline.
 
 ## Install
 
@@ -71,6 +73,10 @@ v.canvas_h = 900            # resize the viewport height (CSS px);
                             # also a constructor arg: SlideViewer(path, canvas_h=900)
 ```
 
+Other constructor args: `canvas_w`, `tile_size`, `cache_max_mb` and
+`jpeg_quality` (tile JPEG quality, 1–95, default 85 — the minimap and the
+`read_crop` path are unaffected).
+
 **Annotations (M2, read-only).** Import a GeoJSON document — a file path or
 a parsed dict (`FeatureCollection`, `Feature`, or bare geometry). Shapes
 render on an overlay canvas with per-feature `color`/`fill`/`label`
@@ -82,6 +88,22 @@ v.set_annotations("roi.geojson")
 v.set_annotations(doc, units="um")
 v.annotations      # normalized shape list (level-0 px)
 v.clear_annotations()
+```
+
+**Drawing (M3).** The canvas view adds polygons by hand: click the canvas
+(for keyboard focus), press **A** (crosshair), **left-click** the
+vertices — dragging still pans and wheel zoom stays live, so the draft
+tracks the view — then press **A** to save or **Esc** to cancel. On save
+the view sends the *open* ring (no redundant closing position), unclamped
+level-0 px, as `last_polygon`; Python normalizes it with the same shared
+ring helper the importer uses (≥ 3 points, nonzero area — degenerate
+drafts are discarded with a warning, `annotations` untouched) and appends
+a `polygon` shape. Drawn shapes work everywhere imported ones do —
+e.g. `read_crop()` of the tissue under one:
+
+```python
+v.annotations               # the appended polygon (fresh id, null styling)
+ring = v.annotations[-1]["points"][0]
 ```
 
 **Custom slide types.** If your slide library exposes the same API as
@@ -96,9 +118,9 @@ v = SlideViewer(slide=my_library.open_slide("my/other/slide.type"))
 ownership of the object and closes it on `close()`.
 
 The mouse does the rest: **scroll** zooms at the cursor, **drag** pans,
-**double-click** zooms in, and the **minimap** jumps the view. Pan/zoom is
-applied instantly in the view (a local transform) and the new viewport is
-synced back to Python (debounced), which fetches any missing tiles.
+and the **minimap** jumps the view. Pan/zoom is applied instantly in the
+view (a local transform) and the new viewport is synced back to Python
+(debounced), which fetches any missing tiles.
 
 No-custom-JS fallback (M0 HTML tile composite, toolbar/slider driven):
 
@@ -108,8 +130,9 @@ v = HtmlSlideViewer("data/testslide.tiff")
 display(v)
 ```
 
-Run `examples/m2_demo.ipynb` (annotations), `examples/m1_demo.ipynb`
-(canvas), or `examples/m0_demo.ipynb` (HTML) for a walkthrough.
+Run `examples/m3_demo.ipynb` (drawing), `examples/m2_demo.ipynb`
+(annotations), `examples/m1_demo.ipynb` (canvas), or
+`examples/m0_demo.ipynb` (HTML) for a walkthrough.
 
 ## Layout
 
@@ -128,6 +151,7 @@ frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   tilemath.js     pure viewport/tile math
   compositor.js  pure canvas scene drawing
   annotations.js pure annotation overlay drawing (M2)
+  polydraw.js    polygon draw state machine + draft preview (M3)
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)
   labextension.js  widget-registry registration
@@ -139,7 +163,7 @@ data/            test slide (whole-slide TIFF, 37382x73222, 8 levels)
 
 ## Tests
 
-Python (pipeline + M0/M1 widget, headless):
+Python (pipeline + M0–M3 widget, headless):
 
 ```bash
 pip install -e ".[dev]"

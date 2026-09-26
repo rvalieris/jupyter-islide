@@ -13,7 +13,7 @@ import warnings
 
 import pytest
 
-from islide.annotations import parse_annotations
+from islide.annotations import normalize_ring, parse_annotations
 
 
 def feat(geom, props=None, fid=None):
@@ -232,3 +232,33 @@ def test_degenerate_shapes_skipped_with_warning():
     assert len(rec) == 2
     assert [s["kind"] for s in shapes] == ["point"]
     assert shapes[0]["points"] == [[9.0, 9.0]]
+
+
+# ------------------------------------------------------- normalize_ring (M3)
+def test_normalize_ring_strips_redundant_closing_position():
+    assert normalize_ring([[0, 0], [10, 0], [0, 10], [0, 0]]) == [
+        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
+    ]
+    assert normalize_ring(((0, 0), (10, 0), (0, 10))) == [
+        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
+    ]
+    # open rings are kept as-is; tuples come back as float lists
+    assert normalize_ring([[0, 0], [10, 0], [0, 10]]) == [
+        [0.0, 0.0], [10.0, 0.0], [0.0, 10.0],
+    ]
+
+
+def test_normalize_ring_rejects_degenerate_and_malformed():
+    assert normalize_ring(None) is None
+    assert normalize_ring("nope") is None
+    assert normalize_ring([1, 2]) is None
+    assert normalize_ring([[0, 0]]) is None
+    assert normalize_ring([[0, 0], [5, 5]]) is None
+    assert normalize_ring([[0, 0], [0, 0], [0, 0]]) is None       # duplicates
+    assert normalize_ring([[0, 0], [10, 0], [20, 0]]) is None     # collinear
+    assert normalize_ring([[0, 0], [10, 0], [float("nan"), 0]]) is None
+    assert normalize_ring([[0, 0], [10, 0], [0, float("inf")]]) is None
+    assert normalize_ring([[0, 0], [10], [0, 10]]) is None        # bad arity
+    assert normalize_ring([[0, 0], [10, 0, 0], [0, 10]]) is None
+    # a 3-position [A, B, A] ring is a genuine closed form: area 0
+    assert normalize_ring([[0, 0], [10, 0], [0, 0]]) is None

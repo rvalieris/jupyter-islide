@@ -10,7 +10,7 @@ import { SLIDE_MODEL_DEFAULTS, ISLIDE_MODULE_VERSION } from '../defaults.js';
 test('defaults cover exactly the documented trait names', () => {
   assert.deepEqual(
     Object.keys(SLIDE_MODEL_DEFAULTS).sort(),
-    ['annotations', 'canvas_h', 'last_click', 'last_region', 'meta',
+    ['annotations', 'canvas_h', 'last_polygon', 'meta',
      'minimap_img', 'slide_open', 'status', 'tile_geo', 'tiles', 'viewport'],
   );
 });

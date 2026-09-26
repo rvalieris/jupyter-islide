@@ -34,6 +34,11 @@
   cursor: grabbing;
 }
 
+/* M3 drawing mode: crosshair over the canvas (view.js toggles the class) */
+.islide-canvas.islide-drawing {
+  cursor: crosshair;
+}
+
 /* M2 annotation overlay: sits over the image canvas (below the minimap),
    never takes mouse input. */
 .islide-annotations {

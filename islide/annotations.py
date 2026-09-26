@@ -36,7 +36,7 @@ import math
 import warnings
 from typing import Any
 
-__all__ = ["parse_annotations"]
+__all__ = ["parse_annotations", "normalize_ring"]
 
 _GEOMETRY_TYPES = (
     "Point",
@@ -237,25 +237,71 @@ def _positions(
     return [_coord(p, what) for p in coords]
 
 
+def _position_pair(pos: Any) -> tuple[float, float] | None:
+    """A position as a `(float(x), float(y))` tuple, or ``None``."""
+    if isinstance(pos, (list, tuple)) and len(pos) == 2:
+        x, y = pos
+        if (
+            isinstance(x, (int, float))
+            and not isinstance(x, bool)
+            and isinstance(y, (int, float))
+            and not isinstance(y, bool)
+            and math.isfinite(x)
+            and math.isfinite(y)
+        ):
+            return float(x), float(y)
+    return None
+
+
+def normalize_ring(ring: Any) -> list[list[float]] | None:
+    """
+    Normalize a position sequence (a polygon *ring*, level-0 px) to its
+    canonical form: a list of `[x, y]` floats, **open** (redundant closing
+    position removed), in input order.
+
+    This is the single normalization every polygon ring goes through, so
+    drawn rings (`SlideViewer.last_polygon`, M3) and imported GeoJSON rings
+    (below) cannot diverge. Returns ``None`` for a degenerate ring — fewer
+    than 3 points, a non-finite coordinate, or zero area (collinear) — and
+    also ``None`` for malformed input; callers that need strict structural
+    errors check structure first (as `parse_annotations` does).
+    """
+    if not isinstance(ring, (list, tuple)) or len(ring) < 3:
+        return None
+    pts: list[tuple[float, float]] = []
+    for pos in ring:
+        xy = _position_pair(pos)
+        if xy is None:
+            return None
+        pts.append(xy)
+    # Drop a redundant closing position (GeoJSON-style closed ring).
+    if len(pts) > 3 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 3 or _ring_area(pts) < _DEGENERATE_AREA:
+        return None
+    return [[x, y] for x, y in pts]
+
+
 def _rings(coords: Any, what: str, scale: float) -> list[list[list[float]]] | None:
     """Outer + hole rings scaled to level-0 px, or ``None`` if degenerate."""
     if not isinstance(coords, list) or not coords:
         raise ValueError(f"{what}: coordinates must be a non-empty list of rings")
+    # Strict structural check (the GeoJSON contract), then the shared
+    # normalization for the numerics.
     rings: list[list[list[float]]] = []
     for ring in coords:
         if not isinstance(ring, list) or len(ring) < 3:
             raise ValueError(f"{what}: each ring needs at least 3 positions")
         pts = [_coord(p, what) for p in ring]
-        if pts[0] == pts[-1]:
-            pts = pts[:-1]  # closing position is redundant for fill/stroke
         rings.append([[x * scale, y * scale] for x, y in pts])
-    if _ring_area(rings[0]) < _DEGENERATE_AREA:
+    norm = [normalize_ring(r) for r in rings]
+    if any(r is None for r in norm):
         warnings.warn(
             f"islide: skipping degenerate {what} annotation (zero area)",
             UserWarning,
         )
         return None
-    return rings
+    return norm
 
 
 def _ring_area(pts: list[tuple[float, float]]) -> float:
@@ -267,6 +313,7 @@ def _ring_area(pts: list[tuple[float, float]]) -> float:
         x1, y1 = pts[(i + 1) % n]
         a += x0 * y1 - x1 * y0
     return abs(a) / 2.0
+
 
 
 def _path_length(pts: list[tuple[float, float]]) -> float:

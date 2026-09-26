@@ -36,13 +36,15 @@ notebook, drive it from Python.
   pan), plus a minimap for coarse navigation.
 - Programmatic control: `center_on(x, y, mpp=…)`, viewport queries.
 - Annotation overlay: import existing shapes from GeoJSON (M2) plus
-  hand-drawn polygons (M3).
+  hand-drawn polygons (M3), with select/delete/label/recolor of
+  existing shapes in the view (M4).
 - Stay in the kernel: no external server, no tile pyramid to pre-generate.
 
 ### Non-goals (v1)
 
-- Editing/deleting individual annotations in the UI (M3 can *create*
-  polygons by drawing; there is no per-shape move/edit/delete).
+- Geometry editing of annotations in the UI: M3 *creates* polygons by
+  drawing and M4 can select, delete, label, and recolor existing shapes,
+  but there is no per-shape move, resize, or vertex edit.
 - Remote slides (HTTP/`openslide_server`, S3). *The backend interface is
   designed to allow it later; v1 is local files only.*
 - JupyterLite (OpenSlide is a C library; no WASM build to maintain).
@@ -161,8 +163,9 @@ e.g. 1280 × 720 ≈ 3.7 MB RGBA) and slice it into tiles. Consequences:
 ### 5.3 Encoding choice
 
 - JPEG q≈85 for tiles: 10–40 KB/tile over the comm; visually lossless for
-  tissue at display size. PNG fallback trait option for users who need exact
-  pixels (e.g. color quantization debugging).
+  tissue at display size. Quality is a widget constructor argument
+  (`jpeg_quality=85` default, M3); there is no PNG fallback — exact pixels
+  are `read_crop()`'s job (it returns the raw PIL image, unencoded).
 - Tiles are always sent from Python only. The JS side never echoes tile data
   back (trait is treated as write-once from Python per update; JS just
   replaces its tile map on each push).
@@ -192,7 +195,9 @@ see §10).
 </div>
 ```
 
-The second `#annotations` canvas is implemented (M2; §6.3).
+The second `#annotations` canvas is implemented (M2; §6.3). M4 adds the
+`annotate` toolbar toggle and the `del` / `label` / `color` context
+actions (§6.5).
 
 ### 6.1.1 Package layout & registration (implemented)
 
@@ -203,6 +208,7 @@ frontend/
   compositor.js  drawScene(ctx, {transform, meta, tileGeo, images}) —
                  the only place tile pixels are drawn; pure over a ctx
   annotations.js drawAnnotations(ctx, {transform, shapes}) — M2 overlay
+  polydraw.js    M3 drawing: mode state machine + drawDraftPolygon (§6.4)
   model.js       SlideModel extends DOMWidgetModel (defaults only)
   view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap)
   defaults.js    SLIDE_MODEL_DEFAULTS — the trait names shared with Python
@@ -237,13 +243,16 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 |---|---|---|
 | wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`) | M1 ✅ |
 | left drag (pointer events) | pan (M3: in drawing mode a ≥ 4 px left drag is also a pan — a still click adds a vertex) | M1 ✅ / M3 |
-| double-click | zoom in ×2 at cursor (disabled in M3 drawing mode) | M1 ✅ / M3 |
+| double-click | zoom in ×2 at cursor — **removed in M3** (unnecessary; wheel / toolbar / minimap cover zoom) | M1 ✅ / M3 |
 | minimap click/drag | center viewport on that point | M1 ✅ |
 | toolbar | −/+, fit slide, 1:1 | M1 ✅ |
 | right-drag | pan (both modes) | M3 |
 | left click (M3 drawing mode) | append a polygon vertex | M3 |
 | key **A** | toggle M3 drawing mode (enter / save-and-exit) | M3 |
 | key **Esc** (M3 drawing mode) | cancel: discard the draft, exit | M3 |
+| toolbar **annotate** | toggle M3 drawing mode (the visible entry point; **A** stays the alias; pressed while drawing) | M4 |
+| left click (idle, no mode) | hit-test the annotations at the cursor: hit → select (thick accent highlight), miss → deselect; a ≥ 4 px drag is still a pan | M4 |
+| toolbar **del** / **label** / **color** (a shape selected) | remove the selected shape / attach or edit its label / set its stroke color and fill (incl. clearing the fill) | M4 |
 
 All of these mutate the **viewport trait** — the *only* JS→Python channel
 for navigation. The wire form is
@@ -295,7 +304,8 @@ style as `plan.py`):
   stroke/outline color, default **black**), `fill` (CSS interior fill
   color, default **transparent** — polygons are outline-only unless a
   fill is given; an `rgba()` string gives a translucent fill), and
-  `label` (string; drawn next to points).
+  `label` (string; drawn next to the point — M4 extends rendering to all
+  kinds, §6.5).
 - Coordinates: GeoJSON numbers are local coordinates from the slide
   origin, **y down** (slide orientation; no CRS handling). Two unit
   conventions, chosen at import:
@@ -352,7 +362,7 @@ image canvas, drawn after the tiles):
   `globalAlpha`, fading the whole annotation layer. View-local display
   state, not a trait (resets on restart, like the local transform).
 - Labels: 12 px screen-space text next to the point, only when `label`
-  is set.
+  is set (M4: any kind, drawn at the first vertex — §6.5).
 - Pure module `frontend/annotations.js`
   (`drawAnnotations(ctx, {transform, shapes, alpha})`), unit-tested
   against a mock ctx like the compositor.
@@ -370,10 +380,12 @@ v.annotations      # the normalized shape list (level-0 px)
 needed (the `um` conversion requires mpp).
 
 **Not in M2** (explicit): any UI editing (no add-on-click, drag, edit,
-or delete — polygon drawing is M3, §6.4); annotation hit-testing, hover,
-and tooltips; per-feature visibility; annotation export (the GeoJSON file
-is the source of truth); `HtmlSlideViewer` annotations (canvas view only,
-M0 fallback untouched).
+or delete — polygon drawing is M3, §6.4; select/delete/label/recolor is
+M4, §6.5); annotation hit-testing, hover, and tooltips (M4 adds
+click hit-testing + selection, §6.5; hover and tooltips stay out);
+per-feature visibility; annotation export (the GeoJSON file is the
+source of truth); `HtmlSlideViewer` annotations (canvas view only, M0
+fallback untouched).
 
 ### 6.4 Polygon drawing (M3)
 
@@ -400,8 +412,9 @@ drawing --Esc-->                         discard + exit
 - **Enter (A, from idle):** crosshair cursor; status
   `Polygon: click to add points — A saves, Esc cancels`. Wheel zoom stays
   live (vertices are slide coords, so the draft tracks the view like the
-  tiles); the minimap stays live; **double-click zoom is disabled** in the
-  mode (a dblclick would inject two coincident vertices).
+  tiles); the minimap stays live; M1's double-click zoom is **removed in
+  M3** — the gesture is unnecessary, and in the mode a dblclick would
+  merely inject two coincident vertices.
 - **Vertex (left click):** a pointerup within ~4 CSS px of the
   pointerdown appends the cursor's level-0 position to the draft. A left
   drag ≥ 4 px is a pan (M1's left-drag pan, now with the click threshold;
@@ -455,9 +468,125 @@ new rendering code.
 
 **Not in M3** (explicit): Python-side event hooks (gone with
 `last_click`/`last_region`); point/line/rect creation; editing or
-deleting individual shapes (`clear_annotations()` only); hit-testing,
-hover, tooltips; annotation export; keyboard beyond A/Esc; touch;
+deleting individual shapes (`clear_annotations()` only — selection and
+the del / label / color actions are M4, §6.5); hit-testing, hover,
+tooltips (M4 adds click hit-testing + selection, §6.5; hover and
+tooltips stay out); annotation export; keyboard beyond A/Esc; touch;
 `HtmlSlideViewer` (M0 fallback untouched, as in M2).
+
+### 6.5 Annotation editing (M4)
+
+M4 is **editing**: a shape that already exists — imported (M2) or drawn
+(M3) — can be selected in the view and deleted, labeled, or recolored.
+No geometry editing: no per-shape move, resize, or vertex edit (the §2
+non-goal stands); `points` only change by re-importing.
+
+**Annotate button.** M3's drawing mode was keyboard-only. M4 gives it a
+toolbar toggle button, **annotate** (pressed while drawing): the visible
+entry point to the annotation tools. **A** stays the alias and the two
+drive the same mode state machine (§6.4) — the button only mirrors the
+mode in its pressed state.
+
+**Selection (idle mode).** In no mode, a left click that is a click (not
+a drag — the same ≥ 4 CSS px threshold as M3) hit-tests the annotation
+set at the cursor, in screen space under the local transform:
+
+- Hit-testing is per kind: `point` — within ~8 px of the marker center
+  (the 4 px radius + halo + slack); `line` — within ~6 px of any
+  segment; `polygon` — point-in-polygon under evenodd (holes are no
+  hits; a click on the outline hits, since the outline is inside).
+  Topmost (last in list order, matching draw order) wins. Pure
+  `hitTest(shapes, transform, x, y) -> id | null` in `annotations.js`
+  (reuses the module's shape helpers; mock-ctx-tested like the rest of
+  it).
+- Hit → **select**: a view-local `selectedId` is set — like the local
+  transform, the alpha slider, and the M3 draft, not a trait; Python
+  never sees the selection, only the edit commands. The selected shape
+  is highlighted: drawn last, with a 3 px accent (`#ff8c00`) stroke in
+  place of the usual 1.5 px (a point gets an accent ring around its
+  marker). That is a new `selectedId` argument to `drawAnnotations` —
+  one draw pass per frame, no extra overlay.
+- Miss → deselect; clicking another shape moves the selection.
+- Navigation never touches the selection: a ≥ 4 px left drag is a pan,
+  wheel/minimap reposition — the highlight is per-frame over the shape
+  data + `selectedId`, so it tracks the shape through re-projection for
+  free.
+- Entering drawing mode (**A** / annotate) clears the selection (in that
+  mode a click is a vertex). Any `annotations` push re-validates: the
+  selected id is no longer in the set → clear (covers
+  `clear_annotations()`, a `set_annotations()` replace, and a delete
+  coming back through the round-trip).
+
+**Contextual actions.** While a shape is selected, three toolbar buttons
+are enabled (disabled otherwise):
+
+- **del** — removes the shape: the view clears the selection and issues
+  the command below; the round-tripped set drops it from the overlay.
+- **label** — opens an inline text input in the toolbar, prefilled with
+  the current label (empty when `null`) and focused; Enter or blur
+  commits (empty text → clear the label), Esc cancels. The label is
+  data on any kind, and M4 extends label *rendering* (M2 drew labels
+  next to points only) so a `line` / `polygon` label is drawn at its
+  first vertex.
+- **color** — opens two native color pickers (stroke, fill) plus a
+  clear-fill checkbox (a native color input cannot encode transparent),
+  prefilled from the shape (null → default black / clear-fill). Each
+  picker close (`change` event) commits the full target `(color, fill)`
+  pair, so the user can change the stroke only, the fill only (incl. no
+  fill), or both — every command is self-contained.
+
+After **del** the actions re-disable (selection cleared); after
+**label** / **color** the selection persists so edits chain.
+
+**Wire: `annotation_edit` (JS→Py, default `null`).** The house
+last-event pattern (`viewport`, §6.2; `last_polygon`, §6.4) — one trait
+for all three ops, discriminated by `op`, so the contract grows by one
+row instead of three:
+
+```
+null | {op: "delete",  id}
+     | {op: "set_label", id, label}        # string; "" / whitespace-only = clear (null)
+     | {op: "set_color", id, color, fill}  # each a CSS color, or null (= default)
+```
+
+The view is the sole writer, saving per command (`model.set` +
+`model.save()`, as M3's `last_polygon`); the trait holds the *last
+issued* command, not cleared (same convention). The Python `observe()`
+handler applies it with a pure `apply_edit(shapes, cmd)` in
+`annotations.py` — a new list, or `None` when the id is unknown (no
+state change, `status` = `edit ignored: unknown annotation id` — the id
+may be stale if a Python-side `set_annotations()` replace raced the
+click) — normalizes (`set_label`: `""` / whitespace-only → `null`;
+`set_color`: values pass through as given; `null` keeps the M2
+*use-the-default* convention — black stroke, transparent fill) and pushes
+the whole updated set on `annotations` (the M2 wire rule: whole set, no
+viewport filtering). `status` reports the applied op (`deleted #a3` /
+`edited #a3 (label)` / `edited #a3 (color)`).
+
+Last-event replay is safe here in a way it is not for `last_polygon`:
+on re-attach the JS snapshot re-sends both `annotations` (the pushed
+set) and the last command, and all three ops are **idempotent** over
+that set — a `delete`'s id is already gone, `set_label` / `set_color`
+re-apply the same values — so replay is a harmless no-op. (`last_polygon`
+is an append: re-sent after the set is restored, it duplicates the shape
+— a known M3 limitation, out of scope here.)
+
+**Python API** (the same apply logic, for headless/programmatic use;
+ids from `v.annotations`):
+
+```python
+v.delete_annotation(id)
+v.set_annotation_label(id, "tumor")      # None / "" clears
+v.set_annotation_color(id, color="red", fill=None)   # None = default
+```
+
+**Not in M4** (explicit): geometry editing (move / resize / vertex — §2
+non-goal); multi-select and drag-select; hover highlight and tooltips
+(click only); keyboard shortcuts for del / label / color (**A** stays
+with the mode toggle); undo (the reset paths are `clear_annotations()`
+/ re-import); annotation export (after edits `v.annotations` is the
+live set; a GeoJSON export is not v1); `HtmlSlideViewer` (canvas view
+only, as in M2/M3).
 
 ## 7. Python API
 
@@ -465,6 +594,7 @@ hover, tooltips; annotation export; keyboard beyond A/Esc; touch;
 from islide import SlideViewer
 
 v = SlideViewer("sample.svs")   # opens in background; safe to display now
+# M3: SlideViewer(path, jpeg_quality=90) — tile JPEG quality (default 85)
 display(v)                      # canvas renders once the slide is open
 v.wait()                       # block until open (raises on open failure)
 
@@ -483,6 +613,12 @@ v.clear_annotations()
 
 # M3: draw a polygon in the view — key A, left-click the vertices,
 # key A again saves it into v.annotations (no programmatic API)
+
+# annotation editing (M4) — the same ops the view's del/label/color
+# buttons issue; ids from v.annotations
+v.delete_annotation("a3")
+v.set_annotation_label("a3", "tumor")   # None / "" clears the label
+v.set_annotation_color("a3", color="red", fill=None)  # None = default
 
 v.close()                      # joins open thread, closes the slide handle
 ```
@@ -505,6 +641,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
 | `annotations` | Py→JS | list | normalized shapes in level-0 px (`{id, kind, points, label, color, fill}`); M2: imported set, M3: drawn polygons appended (§6.4) |
 | `last_polygon` | JS→Py | list | M3: the just-saved drawn polygon — open ring `[[x, y], …]`, level-0 px (`null` = none yet); Python validates and appends the shape to `annotations` |
+| `annotation_edit` | JS→Py | dict | M4: the last issued edit command — `{op: "delete" \| "set_label" \| "set_color", id, …}` (`null` = none yet); Python applies it to `annotations` and pushes the updated set (§6.5) |
 | `status` | Py→JS | str | status line (open progress / error / last render's level·tile info; the live zoom·µm/px is the JS readout's) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
@@ -588,10 +725,11 @@ fetch pass.
 | # | Milestone | Demo |
 |---|---|---|
 | M0 ✅ | **Spike: static pipeline** *(done)*. Viewport state in Python, toolbar/sliders (ipywidgets buttons + a zoom `FloatLogSlider`) drive rendering; tiles pushed to an `HTML` widget as stacked `<img>` tags. No mouse. Proves: openslide plumbing, level selection, one-read-per-viewport, JPEG over comm, cache. Implementation notes: the slide opens **synchronously** in `__init__` (local opens were measured at ~0 s; background open comes with the M1 JS view's loading state), and the HTML compositor lives in `widget.py` only — `plan`/`fetch`/`cache`/`encode` are final-shape. | `examples/m0_demo.ipynb` + zoom buttons |
-| M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor + headless widget tests; the extension build path is documented, see §11), and the M3 polygon-drawing interaction (§6.4). | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
+| M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor/draw state + headless widget tests; the extension build path is documented, see §11). | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
 | M2 ✅ | **Read-only annotations** *(done)*. GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing (M3 adds polygon *drawing*, §6.4). | `examples/m2_demo.ipynb`: `set_annotations` (inline GeoJSON, level-0 px + microns) + smooth pan/zoom over the overlay |
-| M3 | **Polygon drawing.** Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, double-click disabled, wheel/minimap live); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
-| M4 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
+| M3 ✅ | **Polygon drawing** *(done)*. Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, wheel/minimap live); M1's double-click zoom gesture is removed (unnecessary); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. Tile JPEG quality becomes a constructor argument (`jpeg_quality`, default 85; the §5.3 PNG fallback is dropped — exact pixels via `read_crop()`). | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
+| M4 | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
+| M5 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 ## 11. Testing
 
@@ -634,13 +772,31 @@ fetch pass.
   `null` styling, fresh non-colliding id); degenerate drafts (2 pts,
   collinear 3 pts, non-finite) dropped with a warning and no state
   change; successive saves get unique ids; `null` default ignored;
-  `clear_annotations()` after. JS (`frontend/test/polydraw.test.js`):
+  `clear_annotations()` after; `jpeg_quality` constructor arg (default 85,
+  alters the `tiles` payload only). JS (`frontend/test/polydraw.test.js`):
   the pure state machine (A/Esc enter/save/cancel, click-vs-drag
   threshold, vertex accumulation) and `drawDraftPolygon` against a mock
   ctx (vertex dots, segments, dashed closure to cursor / first vertex).
   Contract: `last_polygon` added to `defaults.js` and
   `last_click`/`last_region` removed from both sides — covered by the
   existing cross-language name guard.
+- **M4 annotation-edit tests:** Python headless
+  (`tests/test_widget_m4.py`): `apply_edit` pure over the shape list
+  (delete removes exactly the matching id, order preserved; `set_label`
+  sets / clears (`""` / whitespace-only → `null`); `set_color` sets
+  stroke and/or fill incl. resetting to the `null` defaults; unknown id
+  → no state change, input list untouched); setting the
+  `annotation_edit` trait → `annotations` trait updated with the
+  normalized set, unknown id → no push; the
+  `delete_annotation` / `set_annotation_label` /
+  `set_annotation_color` API routes through the same `apply_edit`;
+  `clear_annotations()` after. JS
+  (`frontend/test/annotations.test.js`): `hitTest` pure (polygon
+  evenodd interior / outline / holes, line distance tolerance, point
+  radius, topmost-first, miss → `null`) and `drawAnnotations` with
+  `selectedId` (accent stroke, wider width, drawn last). Contract:
+  `annotation_edit` added to `defaults.js` — covered by the existing
+  cross-language name guard.
 - **Cross-language contract test:** the Python synced trait names are
   asserted to equal the keys in `frontend/defaults.js` (both directions of
   the same guard), so the comm contract can't drift.
@@ -672,7 +828,7 @@ islide/
 │   ├── fetch.py              # plan -> tiles (cache + one read, cropped)
 │   └── encode.py             # tile -> JPEG data URL
 └── frontend/                 # JS canvas view (npm: jupyter-islide)
-    ├── tilemath.js  compositor.js  annotations.js  model.js  view.js
+    ├── tilemath.js  compositor.js  annotations.js  polydraw.js  model.js  view.js
     ├── defaults.js  labextension.js  index.js  style/index.css
     ├── labextension/  # build output (gitignored) — compiled labextension
     └── test/             # node --test (pure math + compositor)
@@ -727,5 +883,6 @@ standard JupyterLab 4 labextensions discovery path. So:
    re-scoped from "click/region-select interaction + optional annotate
    mode" to **polygon drawing only** (§6.4): no callbacks, no
    point/line/region features, and the reserved `last_click`/`last_region`
-   traits are removed from the contract; M4 = polish & ship (was M3).
+   traits are removed from the contract; M4 = **annotation editing**
+   (selection + del / label / color, §6.5); polish & ship moved to M5.
    *M2 done; M3 re-scoped as proposed.*
