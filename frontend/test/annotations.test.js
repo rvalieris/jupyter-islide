@@ -9,9 +9,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   drawAnnotations,
+  hitTest,
   STROKE_WIDTH,
   POINT_RADIUS,
   HALO_EXTRA,
+  POINT_HIT_RADIUS,
+  LINE_HIT_TOLERANCE,
+  SELECTED_COLOR,
+  SELECTED_STROKE_WIDTH,
 } from '../annotations.js';
 
 function mockCtx() {
@@ -266,4 +271,159 @@ test('alpha sets globalAlpha for the whole layer; save/restore around it', () =>
   const ctx2 = mockCtx();
   drawAnnotations(ctx2, { transform: T, annotations: doc(feat(point(0, 0))) });
   assert.equal(ctx2.state.globalAlpha, 1);
+});
+
+// ---------------------------------------------------------------- M4 (selection)
+
+test('hitTest: empty/invalid documents are misses', () => {
+  for (const annotations of [undefined, null, {}, { features: [] },
+                             { features: 'nope' }]) {
+    assert.equal(hitTest(annotations, T, 256, 256), null);
+  }
+});
+
+test('hitTest: point hit within POINT_HIT_RADIUS, miss beyond', () => {
+  const d = doc(feat(point(0, 0), {}, 'p'));
+  assert.equal(hitTest(d, T, 256, 256), 'p');
+  // the distance test is inclusive of the exact radius
+  assert.equal(hitTest(d, T, 256 + POINT_HIT_RADIUS, 256), 'p');
+  assert.equal(hitTest(d, T, 256 + POINT_HIT_RADIUS + 1, 256), null);
+});
+
+test('hitTest: multipoint — any marker position is a hit', () => {
+  const d = doc(feat(
+    { type: 'MultiPoint', coordinates: [[0, 0], [10, 10]] }, {}, 'm'));
+  assert.equal(hitTest(d, T, 256, 256), 'm');
+  assert.equal(hitTest(d, T, 256 + 10, 256 + 10), 'm');
+  assert.equal(hitTest(d, T, 256 + 100, 256), null);
+});
+
+test('hitTest: line within LINE_HIT_TOLERANCE of any segment', () => {
+  // l0 y=0, x in [-50, 50] -> screen y=256, x 206..306
+  const d = doc(feat(
+    { type: 'LineString', coordinates: [[-50, 0], [50, 0]] }, {}, 'l'));
+  assert.equal(hitTest(d, T, 256, 256), 'l');
+  assert.equal(hitTest(d, T, 256, 256 + LINE_HIT_TOLERANCE), 'l');
+  assert.equal(hitTest(d, T, 256, 256 + LINE_HIT_TOLERANCE + 1), null);
+  // 7 level-0 px (= 7 screen px at zoom 1) past the far endpoint: out
+  assert.equal(hitTest(d, T, 256 + 50 + LINE_HIT_TOLERANCE + 1, 256), null);
+  // a hit near the middle of a slanted segment (not an endpoint)
+  const d2 = doc(feat(
+    { type: 'LineString', coordinates: [[0, 0], [0, 100]] }, {}, 'v'));
+  assert.equal(hitTest(d2, T, 256 + LINE_HIT_TOLERANCE, 256 + 50), 'v');
+});
+
+test('hitTest: polygon interior, evenodd holes, outline, miss', () => {
+  const rings = [
+    [[-50, -50], [50, -50], [50, 50], [-50, 50]],
+    [[-25, -25], [25, -25], [25, 25], [-25, 25]], // hole
+  ];
+  const d = doc(feat({ type: 'Polygon', coordinates: rings }, {}, 'pg'));
+  assert.equal(hitTest(d, T, 296, 256), 'pg');   // interior, outside the hole
+  assert.equal(hitTest(d, T, 256, 256), null);   // hole centre: evenodd out
+  assert.equal(hitTest(d, T, 256, 256 + 50), 'pg'); // on the bottom edge
+  assert.equal(hitTest(d, T, 256, 256 + 90), null); // well outside
+  // outline tolerance: just beyond STROKE_WIDTH of the bottom edge is out
+  assert.equal(hitTest(d, T, 296, 256 + 50 + STROKE_WIDTH + 1), null);
+  assert.equal(hitTest(d, T, 296, 256 + 50 + STROKE_WIDTH), 'pg');
+});
+
+test('hitTest: multipolygon islands flatten into the hit region', () => {
+  const islands = [
+    [[[-50, -50], [50, -50], [50, 50], [-50, 50]]],
+    [[[100, 100], [150, 100], [150, 150], [100, 150]]],
+  ];
+  const d = doc(feat({ type: 'MultiPolygon', coordinates: islands }, {}, 'mp'));
+  assert.equal(hitTest(d, T, 256 + 125, 256 + 125), 'mp'); // inside island 2
+  assert.equal(hitTest(d, T, 256, 256 + 75), null);        // between islands
+});
+
+test('hitTest: the topmost (last) feature under the cursor wins', () => {
+  const d = doc(
+    feat(point(0, 0), {}, 'bottom'),
+    feat(point(0, 0), {}, 'top'),
+  );
+  assert.equal(hitTest(d, T, 256, 256), 'top');
+});
+
+test('hitTest: undrawable features are unhittable; the rest are tested', () => {
+  const d = doc(
+    { type: 'Feature', id: 'bad',
+      geometry: { type: 'Point', coordinates: 'nope' }, properties: {} },
+    feat(point(0, 0), {}, 'ok'),
+  );
+  assert.equal(hitTest(d, T, 256, 256), 'ok');
+  const d2 = doc({ type: 'Feature', id: 'bad', geometry: null, properties: {} });
+  assert.equal(hitTest(d2, T, 256, 256), null);
+});
+
+test('drawAnnotations: the selected feature draws last with the accent style',
+  () => {
+    const ctx = mockCtx();
+    const n = drawAnnotations(ctx, {
+      transform: T,
+      annotations: doc(
+        feat(point(0, 0), {}, 'sel'),
+        feat(point(20, 20), {}, 'other'),
+      ),
+      selectedId: 'sel',
+    });
+    assert.equal(n, 2);
+    const a = arcs(ctx);
+    // the unselected feature first (halo+body at screen (276, 276)); the
+    // selected point after it, plus the accent ring
+    assert.deepEqual(a.map((o) => [o[1], o[2], o[3]]), [
+      [276, 276, POINT_RADIUS + HALO_EXTRA],
+      [276, 276, POINT_RADIUS],
+      [256, 256, POINT_RADIUS + HALO_EXTRA],
+      [256, 256, POINT_RADIUS],
+      [256, 256, POINT_RADIUS + HALO_EXTRA],
+    ]);
+    // the ring is stroked in the accent color at the accent width
+    const stroke = ctx.ops.findIndex(([m]) => m === 'stroke');
+    assert.ok(stroke >= 0);
+    assert.equal(ctx.ops[stroke - 2][0], 'set:strokeStyle');
+    assert.equal(ctx.ops[stroke - 2][1], SELECTED_COLOR);
+    assert.equal(ctx.ops[stroke - 1][0], 'set:lineWidth');
+    assert.equal(ctx.ops[stroke - 1][1], SELECTED_STROKE_WIDTH);
+  });
+
+test('drawAnnotations: a selected line gets the accent stroke and width', () => {
+  const ctx = mockCtx();
+  drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(feat(
+      { type: 'LineString', coordinates: [[-10, 0], [10, 0]] },
+      { color: 'blue' }, 'l')),
+    selectedId: 'l',
+  });
+  assert.equal(ctx.state.strokeStyle, SELECTED_COLOR);
+  assert.equal(ctx.state.lineWidth, SELECTED_STROKE_WIDTH);
+});
+
+test('drawAnnotations: a selected polygon keeps its fill; accent outline', () => {
+  const rings = [[[-10, -10], [10, -10], [10, 10], [-10, 10]]];
+  const ctx = mockCtx();
+  drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(feat(
+      { type: 'Polygon', coordinates: rings },
+      { fill: 'rgba(255,0,0,0.4)' }, 'pg')),
+    selectedId: 'pg',
+  });
+  assert.equal(ctx.ops.filter(([m, a]) => m === 'fill' && a === 'evenodd').length, 1);
+  assert.equal(ctx.state.fillStyle, 'rgba(255,0,0,0.4)');
+  assert.equal(ctx.state.strokeStyle, SELECTED_COLOR);
+  assert.equal(ctx.state.lineWidth, SELECTED_STROKE_WIDTH);
+});
+
+test('drawAnnotations: selectedId that matches nothing draws normally', () => {
+  const ctx = mockCtx();
+  drawAnnotations(ctx, {
+    transform: T,
+    annotations: doc(feat(point(0, 0))),
+    selectedId: 'nope',
+  });
+  assert.equal(arcs(ctx).length, 2); // halo + body only, no ring
+  assert.equal(ctx.ops.filter(([m]) => m === 'stroke').length, 0);
 });

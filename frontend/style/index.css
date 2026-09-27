@@ -97,6 +97,41 @@
   cursor: pointer;
 }
 
+/* M4: the edit buttons group after the zoom group (view.js). */
+.islide-btn[data-action="annotate"] {
+  margin-left: 8px;
+}
+
+/* M4: toolbar editors appended next to the del/label/color buttons
+   (view.js), only while open. */
+.islide-label-input {
+  width: 140px;
+  font-size: 0.9em;
+}
+
+.islide-color-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.islide-color-edit input[type='color'] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--jp-border-color-2, #ccc);
+  background: none;
+  cursor: pointer;
+}
+
+.islide-clear-fill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
 .islide-readout {
   margin-left: 8px;
   font-variant-numeric: tabular-nums;

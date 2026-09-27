@@ -30,7 +30,7 @@ from typing import Any
 import ipywidgets as widgets
 from traitlets import Bool, Dict, Int, List, TraitError, Unicode, validate
 
-from .annotations import normalize_ring, parse_annotations
+from .annotations import apply_edit, normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
 from .encode import jpeg_data_url
@@ -112,6 +112,10 @@ class SlideViewer(widgets.DOMWidget):
       (``v.canvas_h = 900``). The JS view applies it to the canvas; its
       ResizeObserver then syncs the resized viewport back, which re-plans
       the tiles. Headless, the viewport is re-based directly.
+    * M4: ``annotation_edit`` (JS->Py last-event slot, DESIGN.md §6.5)
+      carries one view edit command (``delete`` / ``set_label`` /
+      ``set_color``); the Python observer applies it with the pure
+      ``apply_edit`` and pushes the updated ``annotations`` set.
     """
 
     # -- widget identity (must match the JS module registered by the
@@ -152,6 +156,14 @@ class SlideViewer(widgets.DOMWidget):
     # normalizer (validate below), so the trait always holds the
     # canonical document.
     annotations = Dict(default_value=_EMPTY_ANNOTATION_DOC).tag(sync=True)
+    # M4: the last issued annotation edit command (JS -> Py): a
+    # {"op": "delete" | "set_label" | "set_color", "id", ...} object or
+    # None (no command yet; DESIGN.md §6.5). The Python observer applies
+    # it to `annotations` (pure apply_edit) and pushes the updated set;
+    # an unknown/stale id leaves the set untouched (a status note
+    # instead). Last-event slot: re-attach replays it, and every op is
+    # idempotent over the pushed set, so the replay is a harmless no-op.
+    annotation_edit = Dict(default_value=None, allow_none=True).tag(sync=True)
     status = Unicode("").tag(sync=True)
 
     @validate("annotations")
@@ -216,6 +228,7 @@ class SlideViewer(widgets.DOMWidget):
         self.observe(self._on_viewport_change, names="viewport")
         self.observe(self._on_canvas_h_change, names="canvas_h")
         self.observe(self._on_last_polygon_change, names="last_polygon")
+        self.observe(self._on_annotation_edit_change, names="annotation_edit")
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
@@ -477,7 +490,33 @@ class SlideViewer(widgets.DOMWidget):
         """Remove all annotations (the JS overlay clears)."""
         self.annotations = _EMPTY_ANNOTATION_DOC
 
+    # ------------------------------------------------- M4: annotation editing
+    def delete_annotation(self, feature_id: str) -> None:
+        """Delete the annotation with the given id (the JS view's ``del``
+        action, programmatically). Unknown ids are ignored (the status
+        reports it)."""
+        self.annotation_edit = {"op": "delete", "id": feature_id}
+
+    def set_annotation_label(self, feature_id: str, label: str | None) -> None:
+        """Set the label of the annotation with the given id. ``None``,
+        ``""`` and whitespace-only clear it (no label)."""
+        self.annotation_edit = {
+            "op": "set_label", "id": feature_id, "label": label,
+        }
+
+    def set_annotation_color(
+        self, feature_id: str, color: str | None = None, fill: str | None = None
+    ) -> None:
+        """Set the stroke color and/or fill of the annotation with the given
+        id (CSS color strings; ``None`` = the M2 default: black stroke,
+        transparent fill)."""
+        self.annotation_edit = {
+            "op": "set_color", "id": feature_id, "color": color, "fill": fill,
+        }
+
     # --------------------------------------- M3: drawn polygons (JS -> Py)
+    # (the M4 edit-command observer is registered with the M3 one above;
+    # both apply to `annotations` and push the updated set)
     def _on_last_polygon_change(self, change: dict) -> None:
         """A drawn polygon ring arrived from the view (DESIGN.md §6.4).
 
@@ -524,6 +563,38 @@ class SlideViewer(widgets.DOMWidget):
         while f"a{n}" in used:
             n += 1
         return f"a{n}"
+
+    # ----------------------------------- M4: annotation editing (JS -> Py)
+    def _on_annotation_edit_change(self, change: dict) -> None:
+        """A view edit command arrived (DESIGN.md §6.5): apply it to
+        ``annotations`` (pure ``apply_edit``) and push the updated set.
+
+        A malformed command (warned) or an id that no longer addresses a
+        feature (a Python-side ``set_annotations()`` replace can race a JS
+        click) leaves the document untouched; the status reports the
+        ignored edit either way. The ``annotation_edit`` trait itself is
+        the last-event slot and is not cleared: re-attach replays the
+        command, which is idempotent over the pushed set.
+        """
+        cmd = change["new"]
+        if cmd is None:
+            return
+        try:
+            doc = apply_edit(self.annotations, cmd)
+        except ValueError as e:
+            warnings.warn(f"islide: ignoring annotation edit: {e}", UserWarning)
+            self.status = "edit ignored: malformed command"
+            return
+        if doc is None:
+            self.status = "edit ignored: unknown annotation id"
+            return
+        self.annotations = doc
+        fid = cmd["id"]
+        if cmd["op"] == "delete":
+            self.status = f"deleted #{fid}"
+        else:
+            what = "label" if cmd["op"] == "set_label" else "color"
+            self.status = f"edited #{fid} ({what})"
 
 
 # ---------------------------------------------------------------------------

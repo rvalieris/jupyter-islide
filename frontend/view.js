@@ -15,11 +15,11 @@
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
 import { drawScene } from './compositor.js';
-import { drawAnnotations } from './annotations.js';
 import {
-  CLICK_THRESHOLD_PX, MODE_DRAWING, drawDraftPolygon,
+  CLICK_THRESHOLD_PX, MODE_DRAWING, MODE_IDLE, drawDraftPolygon,
   polyDrawInit, polyEvent,
 } from './polydraw.js';
+import { drawAnnotations, hitTest } from './annotations.js';
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
@@ -38,6 +38,9 @@ export class SlideView extends DOMWidgetView {
     this._dragging = null;
     this._cursor = null; // canvas-relative pointer pos, drives the l0 readout
     this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
+    // M4 annotation editing (DESIGN.md §6.5): the selected feature id
+    // (view-local, view state); `annotation_edit` is the JS->Py wire.
+    this._selectedId = null;
     // M3 polygon drawing (DESIGN.md §6.4): local drawing state (never
     // synced); `last_polygon` is the only JS->Py write.
     this._poly = polyDrawInit();
@@ -78,6 +81,10 @@ export class SlideView extends DOMWidgetView {
         <button class="islide-btn" data-action="zoom-in">+</button>
         <button class="islide-btn" data-action="fit">fit</button>
         <button class="islide-btn" data-action="1:1">1:1</button>
+        <button class="islide-btn" data-action="annotate" aria-pressed="false">annotate</button>
+        <button class="islide-btn" data-action="del" disabled>del</button>
+        <button class="islide-btn" data-action="label" disabled>label</button>
+        <button class="islide-btn" data-action="color" disabled>color</button>
         <label class="islide-alpha" title="annotation opacity">
           <span class="islide-alpha-label">α</span>
           <input class="islide-alpha-input" type="range" min="0" max="1"
@@ -97,6 +104,16 @@ export class SlideView extends DOMWidgetView {
     this._readout = this.el.querySelector('.islide-readout');
     this._cursorEl = this.el.querySelector('.islide-cursor');
     this._status = this.el.querySelector('.islide-status');
+    // M4: the toolbar element and its buttons (annotate = the A-key draw
+    // toggle; del/label/color act on the selected feature, disabled until
+    // a selection exists).
+    this._toolbarEl = this.el.querySelector('.islide-toolbar');
+    this._annotateBtn = this.el.querySelector('[data-action="annotate"]');
+    this._actionBtns = {
+      del: this.el.querySelector('[data-action="del"]'),
+      label: this.el.querySelector('[data-action="label"]'),
+      color: this.el.querySelector('[data-action="color"]'),
+    };
     // M3: keyboard-driven drawing — the root holds keyboard focus (a click
     // on the canvas area focuses the nearest focusable ancestor, this
     // div); see the keydown binding in _bindEvents.
@@ -117,7 +134,7 @@ export class SlideView extends DOMWidgetView {
     this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
     this.listenTo(this.model, 'change:status', this._onStatusChange);
     this.listenTo(this.model, 'change:canvas_h', this._applyCanvasHeight);
-    this.listenTo(this.model, 'change:annotations', this._requestDraw);
+    this.listenTo(this.model, 'change:annotations', this._onAnnotationsChange);
     this._onMetaChange();
     this._onSlideOpen();
     this._onMinimapChange();
@@ -175,6 +192,23 @@ export class SlideView extends DOMWidgetView {
   _setLocalStatus(text) {
     this._localStatus = text;
     this._updateStatus();
+  }
+
+  /** Any annotations push re-validates the M4 selection: a selected id
+   * that is no longer in the set (clear_annotations(), a set_annotations()
+   * replace, a delete round-trip) clears it; the del/label/color buttons
+   * track the selection either way.
+   */
+  _onAnnotationsChange() {
+    if (this._selectedId !== null) {
+      const doc = this.model.get('annotations');
+      const features = doc && Array.isArray(doc.features) ? doc.features : [];
+      if (!features.some((f) => f && f.id === this._selectedId)) {
+        this._selectedId = null;
+      }
+    }
+    this._updateAnnotationButtons();
+    this._requestDraw();
   }
 
   /** Stale drawing messages (cancel/discard) clear on the next interaction.
@@ -292,7 +326,9 @@ export class SlideView extends DOMWidgetView {
     // M3 keyboard (DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
     // it. While the alpha input has focus its keys are left alone.
     this.el.addEventListener('keydown', (e) => {
-      if (e.target === this._alphaInput) return;
+      // Keys typed in a toolbar input (the alpha slider, the M4 label /
+      // color editors) are the input's own business.
+      if (e.target && e.target.tagName === 'INPUT') return;
       if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         this._toggleDrawMode();
@@ -364,6 +400,22 @@ export class SlideView extends DOMWidgetView {
           this._transform, e.clientX - rect.left, e.clientY - rect.top);
         this._poly = polyEvent(this._poly, { type: 'vertex', x, y }).state;
         this._requestDraw();
+      } else if (dist < CLICK_THRESHOLD_PX && d.button === 0
+          && this._poly.mode === MODE_IDLE && this._transform) {
+        // M4: a still left click in idle mode selects the topmost
+        // annotation under the cursor (a miss deselects).
+        const rect = this._canvas.getBoundingClientRect();
+        const id = hitTest(
+          this.model.get('annotations') || {},
+          this._transform,
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+        );
+        if (id !== this._selectedId) {
+          this._selectedId = id;
+          this._updateAnnotationButtons();
+          this._requestDraw();
+        }
       }
       this._clearLocalStatusIfIdle();
       // Touch pointers vanish on release: nothing is hovering anymore.
@@ -380,8 +432,7 @@ export class SlideView extends DOMWidgetView {
       if (this._poly.mode === MODE_DRAWING) this._requestDraw();
     });
 
-    const bar = this.el.querySelector('.islide-toolbar');
-    bar.addEventListener('click', (e) => {
+    this._toolbarEl.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn || !this._transform) return;
       this._toolbarAction(btn.dataset.action);
@@ -420,6 +471,14 @@ export class SlideView extends DOMWidgetView {
     const { state, result } = polyEvent(this._poly, { type: 'toggle' });
     this._poly = state;
     this._canvas.classList.toggle('islide-drawing', state.mode === MODE_DRAWING);
+    this._annotateBtn.setAttribute(
+      'aria-pressed', String(state.mode === MODE_DRAWING));
+    if (state.mode === MODE_DRAWING) {
+      // M4: a click in drawing mode is a vertex — the selection goes with
+      // it.
+      this._selectedId = null;
+      this._updateAnnotationButtons();
+    }
     if (result && result.op === 'save') {
       // JS->Py last-event wire (DESIGN.md §6.4): open ring, level-0 px,
       // unclamped. Python normalizes, appends, and reports via `status`.
@@ -445,6 +504,14 @@ export class SlideView extends DOMWidgetView {
 
   _toolbarAction(action) {
     this._clearLocalStatusIfIdle();
+    if (action === 'annotate') {
+      this._toggleDrawMode();
+      return;
+    }
+    if (action === 'del' || action === 'label' || action === 'color') {
+      this._annotationAction(action);
+      return;
+    }
     const t = this._transform;
     const meta = this.model.get('meta');
     const [minZoom, maxZoom] = this._zoomBounds();
@@ -473,6 +540,127 @@ export class SlideView extends DOMWidgetView {
     }
     this._requestDraw();
     this._scheduleSync();
+  }
+
+  // --------------------------------------------- M4: annotation editing
+  _selectedFeature() {
+    if (this._selectedId === null) return null;
+    const doc = this.model.get('annotations');
+    const features = doc && Array.isArray(doc.features) ? doc.features : [];
+    return features.find((f) => f && f.id === this._selectedId) || null;
+  }
+
+  _updateAnnotationButtons() {
+    const selected = this._selectedId !== null;
+    for (const b of Object.values(this._actionBtns)) {
+      b.disabled = !selected;
+    }
+  }
+
+  /** del / label / color buttons (DESIGN.md §6.5): the edit commands,
+   * issued through the `annotation_edit` last-event slot.
+   */
+  _annotationAction(action) {
+    if (this._selectedId === null) return;
+    const id = this._selectedId;
+    if (action === 'del') {
+      this._selectedId = null;
+      this._updateAnnotationButtons();
+      this.model.set('annotation_edit', { op: 'delete', id });
+      this.model.save();
+      this._requestDraw();
+      return;
+    }
+    const f = this._selectedFeature();
+    if (!f) return;
+    if (action === 'label') this._openLabelEditor(f);
+    else this._openColorEditor(f);
+  }
+
+  /** Inline label editor (toolbar, next to the label button): pre-filled
+   * from the feature; Enter/blur commits, Esc cancels, empty-after-trim
+   * commits null (clears the label). The selection survives the edit.
+   */
+  _openLabelEditor(f) {
+    const props = f.properties || {};
+    const current = typeof props.label === 'string' ? props.label : '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'islide-label-input';
+    input.value = current;
+    input.placeholder = 'label';
+    let closed = false;
+    const onBlurred = () => finish(true);
+    const finish = (commit) => {
+      if (closed) return;
+      closed = true;
+      input.removeEventListener('blur', onBlurred);
+      if (commit) {
+        const text = input.value;
+        this.model.set('annotation_edit', {
+          op: 'set_label',
+          id: this._selectedId,
+          label: text.trim() === '' ? null : text,
+        });
+        this.model.save();
+      }
+      if (input.parentNode) input.parentNode.removeChild(input);
+    };
+    const onKey = (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      else if (e.key === 'Escape') finish(false);
+    };
+    input.addEventListener('keydown', onKey);
+    input.addEventListener('blur', onBlurred);
+    this._toolbarEl.appendChild(input);
+    input.focus();
+    input.select();
+  }
+
+  /** Inline color editor: native stroke/fill pickers + a clear-fill
+   * checkbox (a native color input cannot encode transparent). Pre-filled
+   * from the feature (null -> default black / clear-fill); each change
+   * commits the full {color, fill} pair and closes.
+   */
+  _openColorEditor(f) {
+    const props = f.properties || {};
+    const isHex = (v) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
+    const strokeInput = document.createElement('input');
+    strokeInput.type = 'color';
+    strokeInput.title = 'stroke';
+    strokeInput.value = isHex(props.color) ? props.color : '#000000';
+    const fillInput = document.createElement('input');
+    fillInput.type = 'color';
+    fillInput.title = 'fill';
+    fillInput.value = isHex(props.fill) ? props.fill : '#000000';
+    const clearFill = document.createElement('input');
+    clearFill.type = 'checkbox';
+    clearFill.checked = !isHex(props.fill);
+    clearFill.title = 'clear fill';
+    const clearFillLabel = document.createElement('label');
+    clearFillLabel.className = 'islide-clear-fill';
+    clearFillLabel.append(clearFill, ' clear fill');
+    const box = document.createElement('span');
+    box.className = 'islide-color-edit';
+    box.append(strokeInput, fillInput, clearFillLabel);
+    let closed = false;
+    const commit = () => {
+      if (closed) return;
+      closed = true;
+      this.model.set('annotation_edit', {
+        op: 'set_color',
+        id: this._selectedId,
+        color: strokeInput.value,
+        fill: clearFill.checked ? null : fillInput.value,
+      });
+      this.model.save();
+      if (box.parentNode) box.parentNode.removeChild(box);
+    };
+    strokeInput.addEventListener('change', commit);
+    fillInput.addEventListener('change', commit);
+    clearFill.addEventListener('change', commit);
+    this._toolbarEl.appendChild(box);
   }
 
   _minimapJump(e) {
@@ -555,6 +743,7 @@ export class SlideView extends DOMWidgetView {
       transform: t,
       annotations: this.model.get('annotations') || {},
       alpha: this._annotAlpha,
+      selectedId: this._selectedId,
     });
     // M3: the in-progress polygon draft, on top of the imported features,
     // under the same alpha slider (DESIGN.md §6.4).

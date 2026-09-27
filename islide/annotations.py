@@ -51,7 +51,7 @@ import math
 import warnings
 from typing import Any
 
-__all__ = ["parse_annotations", "normalize_ring"]
+__all__ = ["parse_annotations", "normalize_ring", "apply_edit", "EDIT_OPS"]
 
 _GEOMETRY_TYPES = (
     "Point",
@@ -398,3 +398,93 @@ def _path_length(pts: list[tuple[float, float]]) -> float:
     for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
         total += math.hypot(x1 - x0, y1 - y0)
     return total
+
+
+# ---------------------------------------------------------------------------
+# M4: edit commands
+
+
+# M4 edit operations (DESIGN.md §6.5): the `annotation_edit` last-event
+# command is discriminated by `op`; the ops are idempotent over a
+# normalized document (a replayed `delete` finds no feature, the replayed
+# set ops store the same values).
+EDIT_OPS = ("delete", "set_label", "set_color")
+
+
+def apply_edit(doc: dict, cmd: Any) -> dict | None:
+    """Purely apply one M4 edit command to the canonical document.
+
+    ``cmd`` is one of (DESIGN.md §6.5):
+
+        {"op": "delete", "id": <str>}
+        {"op": "set_label", "id": <str>, "label": <str | None>}
+        {"op": "set_color", "id": <str>, "color": <str | None>,
+         "fill": <str | None>}
+
+    Returns a **new** document, or ``None`` if ``id`` does not address a
+    feature of ``doc`` (a stale id — the caller keeps the current state).
+    ``set_label`` stores ``label`` (``""``/whitespace-only -> ``null`` =
+    no label); ``set_color`` stores the ``color``/``fill`` pair verbatim
+    (``null`` = the M2 use-the-default convention: black stroke, transparent
+    fill). The input is never mutated; the returned document shares
+    geometry objects with it (the widget re-normalizes through
+    ``parse_annotations`` on assignment). Raises ``ValueError`` on a
+    malformed command: unknown op, missing/empty/non-string ``id``, or a
+    non-string ``label``/``color``/``fill`` (missing keys count as
+    malformed — the wire form always carries them).
+    """
+    if not isinstance(doc, dict) or not isinstance(doc.get("features"), list):
+        raise ValueError("annotation document must be a FeatureCollection")
+    if not isinstance(cmd, dict):
+        raise ValueError(f"edit command must be an object, got {type(cmd).__name__}")
+    op = cmd.get("op")
+    fid = cmd.get("id")
+    if op not in EDIT_OPS:
+        raise ValueError(f"unknown edit op {op!r} (expected one of {EDIT_OPS})")
+    if not isinstance(fid, str) or not fid:
+        raise ValueError(f"edit command 'id' must be a non-empty string, got {fid!r}")
+    idx = _feature_index(doc, fid)
+    if idx is None:
+        return None
+    if op == "delete":
+        feats = doc["features"]
+        return {"type": "FeatureCollection", "features": [f for i, f in enumerate(feats) if i != idx]}
+    if op == "set_label":
+        if "label" not in cmd:
+            raise ValueError("set_label command needs a 'label' member")
+        return _set_props(doc, idx, {"label": _edit_text(cmd["label"])})
+    # set_color
+    for key in ("color", "fill"):
+        if key not in cmd:
+            raise ValueError(f"set_color command needs a {key!r} member")
+    return _set_props(doc, idx, {"color": _edit_text(cmd["color"]), "fill": _edit_text(cmd["fill"])})
+
+
+def _feature_index(doc: dict, fid: str) -> int | None:
+    """Index of the feature addressed by ``fid`` (ids are unique across the
+    normalized document), else ``None`` (a stale id)."""
+    for i, f in enumerate(doc["features"]):
+        if isinstance(f, dict) and f.get("id") == fid:
+            return i
+    return None
+
+
+def _edit_text(v: Any) -> str | None:
+    """A command string-or-null member: ``null`` passes through (no label /
+    use-the-default); ``""``/whitespace-only -> ``null``."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError(f"edit command member must be a string or null, got {type(v).__name__}")
+    return v if v.strip() else None
+
+
+def _set_props(doc: dict, idx: int, updates: dict) -> dict:
+    f = doc["features"][idx]
+    props = dict(f.get("properties") or {})
+    props.update(updates)
+    feature = dict(f)
+    feature["properties"] = props
+    out = list(doc["features"])
+    out[idx] = feature
+    return {"type": "FeatureCollection", "features": out}
