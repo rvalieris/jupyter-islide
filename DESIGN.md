@@ -190,7 +190,7 @@ see §10).
     </div>
   </div>
   <div.islide-toolbar>
-    [−] [+] [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  cursor "18691, 36611"  status
+    [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  cursor "18691, 36611"  status
   </div>
 </div>
 ```
@@ -245,7 +245,7 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 | left drag (pointer events) | pan (M3: in drawing mode a ≥ 4 px left drag is also a pan — a still click adds a vertex) | M1 ✅ / M3 |
 | double-click | zoom in ×2 at cursor — **removed in M3** (unnecessary; wheel / toolbar / minimap cover zoom) | M1 ✅ / M3 |
 | minimap click/drag | center viewport on that point | M1 ✅ |
-| toolbar | −/+, fit slide, 1:1 | M1 ✅ |
+| toolbar | fit slide, 1:1 (the −/+ zoom buttons were removed in the M4 polish pass — wheel zoom covers them) | M1 ✅ / M4 |
 | right-drag | pan (both modes) | M3 |
 | left click (M3 drawing mode) | append a polygon vertex | M3 |
 | key **A** | toggle M3 drawing mode (enter / save-and-exit) | M3 |
@@ -341,13 +341,14 @@ and GC-in-GC makes depth unbounded. It is accepted at import and expanded.
   (`selectedId`) and edit commands address features by id across the
   Py⇄JS round trip. Rendering, culling, and draw order are list-order,
   not id-keyed.
-- `properties`: arbitrary string keys/values pass through untouched.
-  The viewer recognizes `label` (string), `color` (CSS stroke/outline
-  color, default **black**), and `fill` (CSS interior fill, default
-  **transparent** — polygons are outline-only unless a fill is given;
-  an `rgba()` string gives a translucent fill). `null`/absence mean
-  *"use the default"*, not *"none"* — the renderer treats them
-  identically.
+- `properties`: arbitrary string keys/values pass through untouched,
+  except a `null`-valued key is dropped (the canonical form has no
+  `null` values; absence is the no-value state). The viewer recognizes
+  `label` (string), `color` (CSS stroke/outline color, default
+  **black**), and `fill` (CSS interior fill, default **transparent** —
+  polygons are outline-only unless a fill is given; an `rgba()` string
+  gives a translucent fill). Absence means *"use the default"*, not
+  *"none"* — the renderer treats absent and `null` identically.
 
 *Invariants* — every document the viewer produces satisfies these (which
 is what keeps the renderer's per-feature guard a one-line `continue`):
@@ -385,8 +386,8 @@ lives):
   fresh `aN`; **uniqueness enforced** — a collision is a `ValueError`
   (fixes the M2 latent bug: a `Multi*` / `GeometryCollection` feature's
   id was stamped on *every* shape it expanded to).
-- `properties` kept whole; a non-string `label` / `color` / `fill` is a
-  `ValueError` (as M2).
+- `properties` kept whole minus `null`-valued keys; a non-string
+  `label` / `color` / `fill` is a `ValueError` (as M2).
 
 **Wire:** new trait `annotations` (Py→JS, dict — the document). The *entire* normalized
 set is sent once at import — deliberately **not** filtered by viewport in
@@ -592,10 +593,11 @@ are enabled (disabled otherwise):
   first vertex.
 - **color** — opens two native color pickers (stroke, fill) plus a
   clear-fill checkbox (a native color input cannot encode transparent),
-  prefilled from the shape (null → default black / clear-fill). Each
-  picker close (`change` event) commits the full target `(color, fill)`
-  pair, so the user can change the stroke only, the fill only (incl. no
-  fill), or both — every command is self-contained.
+  prefilled from the shape (null → default black / clear-fill). Picking a
+  fill color auto-unchecks clear-fill (the picker wins); checking the box
+  commits `null`. Each picker close (`change` event) commits the full
+  target `(color, fill)` pair, so the user can change the stroke only, the
+  fill only (incl. no fill), or both — every command is self-contained.
 
 After **del** the actions re-disable (selection cleared); after
 **label** / **color** the selection persists so edits chain.
@@ -619,9 +621,10 @@ handler applies it with a pure `apply_edit(doc, cmd)` in
 state change, `status` = `edit ignored: unknown annotation id` — the id
 may be stale if a Python-side `set_annotations()` replace raced the
 click) — `delete` removes the feature, `set_label` / `set_color` mutate
-its `properties` (`set_label`: `""` / whitespace-only → `null`;
-`set_color`: values pass through as given; `null` keeps the M2
-*use-the-default* convention — black stroke, transparent fill) and pushes
+its `properties` (no-value → the key is dropped: `set_label` with
+`""` / whitespace-only clears the label; `set_color` with a `null`
+member drops it — the M2 *use-the-default* convention, black stroke,
+transparent fill) and pushes
 the whole updated set on `annotations` (the M2 wire rule: whole set, no
 viewport filtering). `status` reports the applied op (`deleted #a3` /
 `edited #a3 (label)` / `edited #a3 (color)`).
@@ -793,7 +796,7 @@ fetch pass.
 | M2 ✅ | **Read-only annotations** *(done)*. GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing (M3 adds polygon *drawing*, §6.4). | `examples/m2_demo.ipynb`: `set_annotations` (inline GeoJSON, level-0 px + microns) + smooth pan/zoom over the overlay |
 | M3 ✅ | **Polygon drawing** *(done)*. Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, wheel/minimap live); M1's double-click zoom gesture is removed (unnecessary); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. Tile JPEG quality becomes a constructor argument (`jpeg_quality`, default 85; the §5.3 PNG fallback is dropped — exact pixels via `read_crop()`). | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
 | M3.5 | **Canonical GeoJSON annotation format.** The M2/M3 flat shape list becomes the annotation document of §6.3: the `annotations` trait is a `Dict` (empty-`FeatureCollection` default; trait assignment coerced through the normalizer); `set_annotations(doc, units)` keeps its contract — validate → normalize → assign → push — and the stored/returned value *is* the document; the `last_polygon` observer appends a `Polygon` feature (fresh non-colliding id, empty `properties`); the renderer iterates features over three primitives (markers / open path / evenodd ring-set) and reads `label`/`color`/`fill` from `properties`. `MultiPoint` / `MultiPolygon` stay whole; `GeometryCollection` expands at import; degenerate members drop with warnings; ids unique (collision → `ValueError`) and stable — fixing the M2 duplicate-id bug. Wire-contract change: module version 1.0.0 → 2.0.0 + labextension rebuild; the `last_polygon` and planned `annotation_edit` contracts are unchanged. | `tests/test_annotations.py` (canonical document over all six source geometry types; units; degenerate drops; id uniqueness; `properties` pass-through), `test_widget_m2.py` / `test_widget_m3.py` (document trait; `last_polygon` appends a feature), `frontend/test/annotations.test.js` (three primitives; per-feature guard); `examples/m2_demo.ipynb` + `m3_demo.ipynb`: same behavior, `v.annotations` is the document |
-| M4 | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
+| M4 | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
 | M5 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 ## 11. Testing
@@ -864,9 +867,9 @@ fetch pass.
   (`tests/test_widget_m4.py`): `apply_edit` pure over the document
   (delete removes exactly the matching feature, order preserved;
   `set_label`
-  sets / clears (`""` / whitespace-only → `null`); `set_color` sets
-  stroke and/or fill incl. resetting to the `null` defaults; unknown id
-  → no state change, input list untouched); setting the
+  sets / clears (`""` / whitespace-only → key dropped); `set_color` sets
+  stroke and/or fill incl. resetting to the defaults (`null` members
+  dropped); unknown id → no state change, input list untouched); setting the
   `annotation_edit` trait → `annotations` trait updated with the
   normalized set, unknown id → no push; the
   `delete_annotation` / `set_annotation_label` /

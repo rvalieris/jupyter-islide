@@ -27,7 +27,9 @@
   width: 100%;
   height: 100%;
   touch-action: none;
-  cursor: grab;
+  /* plain arrow at rest; grab/grabbing appear only while a button is down
+     (the pan gesture) */
+  cursor: default;
 }
 
 .islide-canvas:active {

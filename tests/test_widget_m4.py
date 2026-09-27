@@ -180,7 +180,9 @@ def test_public_api_issues_commands_through_the_trait(viewer):
     assert viewer.annotations["features"][1]["properties"]["label"] == "mitosis"
 
     viewer.set_annotation_color("a1", color="blue", fill=None)
-    assert viewer.annotations["features"][0]["properties"]["color"] == "blue"
+    # fill=None drops the key: the canonical form has no None values
+    assert viewer.annotations["features"][0]["properties"] == {
+        "label": "x", "color": "blue"}
 
     viewer.delete_annotation("a2")
     assert viewer.annotation_edit == {"op": "delete", "id": "a2"}

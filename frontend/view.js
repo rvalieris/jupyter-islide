@@ -77,8 +77,6 @@ export class SlideView extends DOMWidgetView {
         </div>
       </div>
       <div class="islide-toolbar">
-        <button class="islide-btn" data-action="zoom-out">−</button>
-        <button class="islide-btn" data-action="zoom-in">+</button>
         <button class="islide-btn" data-action="fit">fit</button>
         <button class="islide-btn" data-action="1:1">1:1</button>
         <button class="islide-btn" data-action="annotate" aria-pressed="false">annotate</button>
@@ -514,16 +512,7 @@ export class SlideView extends DOMWidgetView {
     }
     const t = this._transform;
     const meta = this.model.get('meta');
-    const [minZoom, maxZoom] = this._zoomBounds();
     switch (action) {
-      case 'zoom-in':
-        this._transform = math.zoomAtCursor(
-          t, 2, t.canvasW / 2, t.canvasH / 2, minZoom, maxZoom);
-        break;
-      case 'zoom-out':
-        this._transform = math.zoomAtCursor(
-          t, 1 / 2, t.canvasW / 2, t.canvasH / 2, minZoom, maxZoom);
-        break;
       case 'fit':
         this._transform = {
           cx: meta.dimensions[0] / 2,
@@ -658,7 +647,12 @@ export class SlideView extends DOMWidgetView {
       if (box.parentNode) box.parentNode.removeChild(box);
     };
     strokeInput.addEventListener('change', commit);
-    fillInput.addEventListener('change', commit);
+    // Picking a fill color wins over "clear fill": the checkbox follows
+    // the picker, so the chosen color is what gets committed.
+    fillInput.addEventListener('change', () => {
+      clearFill.checked = false;
+      commit();
+    });
     clearFill.addEventListener('change', commit);
     this._toolbarEl.appendChild(box);
   }

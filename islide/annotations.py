@@ -32,9 +32,10 @@ renders read-only:
   ``ValueError`` — including the latent M2 case of a
   ``GeometryCollection`` feature *with* an ``id`` expanding into 2+
   members (its id cannot be shared).
-* **Properties pass through whole**: ``label``/``color``/``fill`` must be
-  strings (or absent/``null``); every other key (and its value) is kept
-  untouched.
+* **Properties**: a ``null``-valued key is dropped (the canonical form
+  has no ``None`` values — absence is the no-value state);
+  ``label``/``color``/``fill`` must be strings (or absent); every other
+  key (and its value) passes through untouched.
 
 Validation contract: document-level structure is strict (``ValueError``:
 non-dict document, unknown type, missing ``features``/``geometry``/
@@ -112,7 +113,9 @@ def parse_annotations(doc: Any, units: str = "px", mpp: float | None = None) -> 
                     "type": "Feature",
                     "id": _take_id(used, fid_s if i == 0 else None),
                     "geometry": leaf,
-                    "properties": dict(props),
+                    "properties": {
+                        k: v for k, v in props.items() if v is not None
+                    },
                 }
             )
     return {"type": "FeatureCollection", "features": features}
@@ -423,10 +426,12 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
 
     Returns a **new** document, or ``None`` if ``id`` does not address a
     feature of ``doc`` (a stale id — the caller keeps the current state).
-    ``set_label`` stores ``label`` (``""``/whitespace-only -> ``null`` =
-    no label); ``set_color`` stores the ``color``/``fill`` pair verbatim
-    (``null`` = the M2 use-the-default convention: black stroke, transparent
-    fill). The input is never mutated; the returned document shares
+    ``set_label`` stores ``label`` (``""``/whitespace-only/``None`` = no
+    label — the ``label`` key is dropped); ``set_color`` stores the
+    ``color``/``fill`` pair (``None`` members are dropped — the M2
+    use-the-default convention: black stroke, transparent fill). The
+    canonical form has no ``None``-valued properties. The input is never
+    mutated; the returned document shares
     geometry objects with it (the widget re-normalizes through
     ``parse_annotations`` on assignment). Raises ``ValueError`` on a
     malformed command: unknown op, missing/empty/non-string ``id``, or a
@@ -482,7 +487,13 @@ def _edit_text(v: Any) -> str | None:
 def _set_props(doc: dict, idx: int, updates: dict) -> dict:
     f = doc["features"][idx]
     props = dict(f.get("properties") or {})
-    props.update(updates)
+    for key, v in updates.items():
+        # the canonical form has no None values: a cleared member is the
+        # key's absence
+        if v is None:
+            props.pop(key, None)
+        else:
+            props[key] = v
     feature = dict(f)
     feature["properties"] = props
     out = list(doc["features"])

@@ -271,9 +271,8 @@ class TestProperties:
         doc = parse_annotations(
             feat(point(0, 0), props={"m": 5, "tags": [1, 2], "note": None})
         )
-        assert features(doc)[0]["properties"] == {
-            "m": 5, "tags": [1, 2], "note": None
-        }
+        # unknown keys are kept; the None-valued one is dropped
+        assert features(doc)[0]["properties"] == {"m": 5, "tags": [1, 2]}
 
     def test_absent_properties_become_empty_object(self):
         doc = parse_annotations(point(0, 0))
@@ -290,13 +289,13 @@ class TestProperties:
         with pytest.raises(ValueError, match="must be a string"):
             parse_annotations(feat(point(0, 0), props={key: 5}))
 
-    def test_none_style_properties_are_allowed(self):
+    def test_none_style_properties_are_dropped(self):
         doc = parse_annotations(
             feat(point(0, 0), props={"label": None, "color": None, "fill": None})
         )
-        assert features(doc)[0]["properties"] == {
-            "label": None, "color": None, "fill": None
-        }
+        # legal input; the canonical form has no None values — the keys
+        # are absent
+        assert features(doc)[0]["properties"] == {}
 
 
 # ----------------------------------------------------------------------- units
@@ -568,14 +567,13 @@ class TestApplyEditOps:
     def test_set_label_stores_and_clears(self):
         out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a1", "label": "tumor"})
         assert out["features"][0]["properties"]["label"] == "tumor"
-        out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a2", "label": ""})
-        assert out["features"][1]["properties"]["label"] is None
-        out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a2", "label": "   "})
-        assert out["features"][1]["properties"]["label"] is None
-        out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a2", "label": None})
-        assert out["features"][1]["properties"]["label"] is None
+        for label in ("", "   ", None):  # clear: the key is dropped
+            out = apply_edit(
+                _m4_doc(), {"op": "set_label", "id": "a2", "label": label}
+            )
+            assert "label" not in out["features"][1]["properties"]
 
-    def test_set_color_stores_pair_and_resets_to_null(self):
+    def test_set_color_stores_pair_and_resets_to_the_default(self):
         out = apply_edit(
             _m4_doc(),
             {"op": "set_color", "id": "a1", "color": "red", "fill": "rgba(0,255,0,0.2)"},
@@ -584,9 +582,7 @@ class TestApplyEditOps:
             "color": "red", "fill": "rgba(0,255,0,0.2)"
         }
         out = apply_edit(_m4_doc(), {"op": "set_color", "id": "a2", "color": None, "fill": None})
-        assert out["features"][1]["properties"] == {
-            "label": "x", "color": None, "fill": None,
-        }
+        assert out["features"][1]["properties"] == {"label": "x"}
 
     def test_set_ops_preserve_other_property_keys(self):
         out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a2", "label": "y"})
