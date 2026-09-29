@@ -52,3 +52,39 @@ export function drawScene(ctx, { transform, meta, tileGeo, images }) {
   }
   return n;
 }
+
+/**
+ * Draw a full-slide overlay image (e.g. a model heatmap rendered at the
+ * slide's get_thumbnail scale) stretched over the whole slide, over the
+ * tiles and under the annotations (the view draws it between drawScene
+ * and the annotation pass).
+ *
+ * The overlay PNG keeps its own alpha channel (transported as a PNG data
+ * URL, since JPEG has none); `alpha` (0..1) is the view-level opacity on
+ * top of that.
+ *
+ * @param {object} ctx          canvas 2D context
+ * @param {object} opts
+ * @param {object} opts.transform   JS-local transform {cx, cy, zoom, canvasW, canvasH}
+ * @param {object} opts.meta        slide meta (for dimensions)
+ * @param {object|null} opts.img    decoded overlay image (null = none)
+ * @param {number} opts.alpha       overlay opacity in [0, 1]
+ * @returns {boolean} true if the overlay was drawn
+ */
+export function drawOverlay(ctx, { transform, meta, img, alpha }) {
+  if (!img || !img._ready || !(alpha > 0)) return false;
+  const [sw, sh] = meta.dimensions;
+  const zoom = transform.zoom;
+  const [left, top] = math.l0ToScreen(transform, 0, 0);
+  const w = sw * zoom;
+  const h = sh * zoom;
+  // Nothing to draw if the slide is fully off-canvas (or degenerate).
+  if (left >= transform.canvasW || top >= transform.canvasH
+      || left + w <= 0 || top + h <= 0) {
+    return false;
+  }
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(img, left, top, w, h);
+  ctx.globalAlpha = 1;
+  return true;
+}

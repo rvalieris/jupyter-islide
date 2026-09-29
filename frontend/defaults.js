@@ -12,6 +12,11 @@ export const SLIDE_MODEL_DEFAULTS = {
   tiles: {},
   tile_geo: {},
   minimap_img: '',
+  // Overlay: a full-slide image (e.g. a model heatmap at get_thumbnail
+  // scale) drawn over the tiles and under the annotations. `overlay_img`
+  // is a PNG data URL ('' = none); `overlay_alpha` its opacity in [0, 1].
+  overlay_img: '',
+  overlay_alpha: 0.5,
   last_polygon: null,
   // M3.5: the canonical annotation document (a GeoJSON FeatureCollection
   // in level-0 px; DESIGN.md §6.3). Rendered read-only by the JS view.

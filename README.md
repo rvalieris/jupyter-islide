@@ -97,6 +97,28 @@ v.annotations      # canonical document (GeoJSON FeatureCollection, level-0 px)
 v.clear_annotations()
 ```
 
+**Overlay (heatmap).** Show a full-slide image — e.g. a model's heatmap
+rendered at the slide's `get_thumbnail` scale — over the tiles and under
+the annotations, with transparency:
+
+```python
+heat = model.predict(slide.get_thumbnail((256, -1)))  # RGBA, slide aspect (-1 = auto)
+v.set_overlay(heat)                  # or a PNG file path
+v.overlay_alpha = 0.3                # opacity (0–1), or set_overlay(..., alpha=0.3)
+v.set_overlay(heat, transparent=(0, 0, 0))  # pure-black pixels -> transparent (the default)
+v.set_overlay(heat, transparent=None)       # keep the image's own alpha channel
+v.clear_overlay()
+```
+
+The image is stretched over the whole slide, so its aspect ratio must
+match the slide's (a `get_thumbnail` output matches up to rounding). By
+default pure-black pixels (the typical "no prediction" background of a
+model output) become fully transparent; pass `transparent=(r, g, b)` for
+another key or `transparent=None` to keep the image's alpha as-is. PNG
+transport keeps the alpha channel: a heatmap on a transparent background
+(e.g. matplotlib's default colormap) composites cleanly over the slide.
+Available on both `SlideViewer` and `HtmlSlideViewer`.
+
 **Drawing (M3).** The canvas view adds polygons by hand: click the canvas
 (for keyboard focus), press **A** (crosshair), **left-click** the
 vertices — dragging still pans and wheel zoom stays live, so the draft

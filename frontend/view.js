@@ -14,7 +14,7 @@
  */
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
-import { drawScene } from './compositor.js';
+import { drawScene, drawOverlay } from './compositor.js';
 import {
   CLICK_THRESHOLD_PX, MODE_DRAWING, MODE_IDLE, drawDraftPolygon,
   polyDrawInit, polyEvent,
@@ -32,6 +32,7 @@ export class SlideView extends DOMWidgetView {
     super.render();
     this._transform = null;
     this._images = new Map();
+    this._overlayImg = null; // decoded full-slide overlay image (trait: overlay_img)
     this._lastSentViewport = null;
     this._syncTimer = null;
     this._drawQueued = false;
@@ -133,10 +134,13 @@ export class SlideView extends DOMWidgetView {
     this.listenTo(this.model, 'change:status', this._onStatusChange);
     this.listenTo(this.model, 'change:canvas_h', this._applyCanvasHeight);
     this.listenTo(this.model, 'change:annotations', this._onAnnotationsChange);
+    this.listenTo(this.model, 'change:overlay_img', this._onOverlayImgChange);
+    this.listenTo(this.model, 'change:overlay_alpha', this._requestDraw);
     this._onMetaChange();
     this._onSlideOpen();
     this._onMinimapChange();
     this._onStatusChange();
+    this._onOverlayImgChange();
     // Seed the image cache from whatever tiles the model already holds:
     // the kernel's initial render usually completes before this view is
     // attached, so no change:tiles event fires for them. Without this the
@@ -180,6 +184,30 @@ export class SlideView extends DOMWidgetView {
       this._minimapImg.src = url;
     }
     this._layoutMinimap();
+  }
+
+  /** Overlay (heatmap) image: decode the trait's PNG data URL once;
+   * re-decode only when a different overlay is pushed; '' removes it.
+   */
+  _onOverlayImgChange() {
+    const url = this.model.get('overlay_img') || '';
+    if (!url) {
+      this._overlayImg = null;
+      this._requestDraw();
+      return;
+    }
+    if (this._overlayImg && this._overlayImg.src === url) return;
+    const img = new Image();
+    img.onload = () => {
+      img._ready = true;
+      this._requestDraw();
+    };
+    img.onerror = () => {
+      console.error('[islide] overlay image FAILED to decode');
+    };
+    img.src = url;
+    this._overlayImg = img;
+    this._requestDraw();
   }
 
   _onStatusChange() {
@@ -713,6 +741,14 @@ export class SlideView extends DOMWidgetView {
       meta: this.model.get('meta'),
       tileGeo: this.model.get('tile_geo'),
       images: this._images,
+    });
+    // Overlay (heatmap): over the tiles, under the annotation canvas.
+    const alpha = Number(this.model.get('overlay_alpha'));
+    drawOverlay(ctx, {
+      transform: this._transform,
+      meta: this.model.get('meta'),
+      img: this._overlayImg,
+      alpha: Number.isFinite(alpha) ? alpha : 0.5,
     });
     this._drawAnnotations();
     this._drawMinimapViewport();

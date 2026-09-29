@@ -28,12 +28,13 @@ from pathlib import Path
 from typing import Any
 
 import ipywidgets as widgets
-from traitlets import Bool, Dict, Int, List, TraitError, Unicode, validate
+from PIL import Image, ImageChops
+from traitlets import Bool, Dict, Float, Int, List, TraitError, Unicode, validate
 
 from .annotations import apply_edit, normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
-from .encode import jpeg_data_url
+from .encode import jpeg_data_url, png_data_url
 from .fetch import fetch_tiles
 from .plan import ReadPlan, plan_viewport
 from .viewport import SlideMeta, Viewport, fit_zoom
@@ -43,6 +44,71 @@ __all__ = ["SlideViewer", "HtmlSlideViewer"]
 # The empty canonical annotation document (DESIGN.md §6.3); the
 # `annotations` trait default, coerced through the normalizer on access.
 _EMPTY_ANNOTATION_DOC = {"type": "FeatureCollection", "features": []}
+
+# Overlay aspect tolerance: a full-slide image (e.g. a get_thumbnail
+# output) matches the slide's aspect ratio up to integer rounding.
+_OVERLAY_ASPECT_TOL = 0.01
+
+
+def _load_overlay_image(source: str | Path | Image.Image) -> Image.Image:
+    """A full-slide overlay source (PNG path or PIL image) as an RGBA image."""
+    if isinstance(source, (str, Path)):
+        with Image.open(source) as im:
+            return im.convert("RGBA")
+    if isinstance(source, Image.Image):
+        return source.convert("RGBA")
+    raise TypeError("source must be a PNG file path or a PIL image")
+
+
+def _check_overlay_aspect(img: Image.Image, slide_w: int, slide_h: int) -> None:
+    """The overlay is stretched over the whole slide, so its aspect ratio
+    must match the slide's (within the rounding tolerance)."""
+    ratio = (img.width * slide_h) / (img.height * slide_w)
+    if abs(ratio - 1.0) > _OVERLAY_ASPECT_TOL:
+        raise ValueError(
+            "overlay aspect ratio does not match the slide "
+            f"({img.width}×{img.height} vs {slide_w}×{slide_h}); "
+            "expected a full-slide image (e.g. a get_thumbnail output)"
+        )
+
+
+def _validate_transparent_key(
+    key: tuple[int, int, int] | None,
+) -> tuple[int, int, int] | None:
+    """Coerce/validate an overlay transparent-key (RGB triple or None)."""
+    if key is None:
+        return None
+    try:
+        r, g, b = (int(c) for c in key)
+    except (TypeError, ValueError) as e:
+        raise TypeError(
+            "transparent must be an (r, g, b) triple or None, got "
+            f"{key!r}"
+        ) from e
+    if not all(0 <= c <= 255 for c in (r, g, b)):
+        raise ValueError(f"transparent channels must be in 0..255, got {key!r}")
+    return (r, g, b)
+
+
+def _apply_transparency(img: Image.Image, key: tuple[int, int, int] | None) -> None:
+    """Make every pixel exactly equal to the RGB ``key`` fully transparent
+    (in place on the RGBA image); every other pixel keeps its own alpha.
+    ``None`` keeps the image's own alpha channel untouched.
+
+    PIL-only: the per-channel difference from the key is non-zero in
+    exactly one channel per mismatch, so the per-pixel max (lighter of
+    lighter) is 0 iff all three match.
+    """
+    if key is None:
+        return
+    r, g, b = (int(c) for c in key)
+    diff = ImageChops.difference(
+        img.convert("RGB"), Image.new("RGB", img.size, (r, g, b))
+    )
+    dr, dg, db = diff.split()
+    mismatch = ImageChops.lighter(ImageChops.lighter(dr, dg), db)
+    mask = mismatch.point(lambda v: 255 if v else 0)
+    img.putalpha(ImageChops.multiply(img.getchannel("A"), mask))
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +209,19 @@ class SlideViewer(widgets.DOMWidget):
     tiles = Dict({}).tag(sync=True)  # "L:tx:ty" -> JPEG data URL
     tile_geo = Dict({}).tag(sync=True)  # "L:tx:ty" -> [level, ox, oy, cw, ch]
     minimap_img = Unicode("").tag(sync=True)  # whole-slide overview data URL
+    # Overlay: a full-slide image (e.g. a model heatmap rendered at the
+    # slide's get_thumbnail scale) drawn over the tiles and under the
+    # annotations. `overlay_img` is a PNG data URL ("" = no overlay);
+    # `overlay_alpha` its opacity in [0, 1].
+    overlay_img = Unicode("").tag(sync=True)
+    overlay_alpha = Float(0.5).tag(sync=True)
+
+    @validate("overlay_alpha")
+    def _check_overlay_alpha(self, proposal):
+        v = float(proposal["value"])
+        if not 0.0 <= v <= 1.0:
+            raise TraitError("overlay_alpha must be in [0, 1]")
+        return v
     # M3: the last drawn polygon ring (JS -> Py): an open position list in
     # unclamped level-0 px, or None (the last-event slot; DESIGN.md §6.4).
     # The Python observer is the final authority: valid ring -> append a
@@ -490,6 +569,43 @@ class SlideViewer(widgets.DOMWidget):
         """Remove all annotations (the JS overlay clears)."""
         self.annotations = _EMPTY_ANNOTATION_DOC
 
+    # ------------------------------------------------------- overlay (heatmap)
+    def set_overlay(
+        self,
+        source: str | Path | Image.Image,
+        alpha: float | None = None,
+        transparent: tuple[int, int, int] | None = (0, 0, 0),
+    ) -> None:
+        """Show a full-slide overlay image over the tiles (e.g. a model
+        heatmap PNG rendered at the slide's ``get_thumbnail`` scale).
+
+        ``source`` is a PNG file path or a PIL image. The image is
+        stretched over the whole slide, so its aspect ratio must match
+        the slide's (a ``get_thumbnail`` output matches up to rounding);
+        its alpha channel (or a grayscale/RGB image's content) composites
+        with ``overlay_alpha`` opacity — use a heatmap with an alpha
+        channel (e.g. matplotlib's default colormap) for transparent
+        background. ``alpha`` (0–1) sets the opacity; ``None`` leaves the
+        current value. ``transparent``: pixels exactly equal to this RGB
+        triple (default: pure black) become fully transparent; pass
+        ``None`` to keep the image's own alpha channel untouched.
+        Replaces any previous overlay.
+        """
+        self.wait()
+        tkey = _validate_transparent_key(transparent)
+        img = _load_overlay_image(source)
+        _apply_transparency(img, tkey)
+        w, h = self._meta.dimensions  # type: ignore[union-attr]
+        _check_overlay_aspect(img, w, h)
+        self.overlay_img = png_data_url(img)
+        if alpha is not None:
+            self.overlay_alpha = alpha
+        self.status = f"overlay: {img.width}×{img.height} png"
+
+    def clear_overlay(self) -> None:
+        """Remove the overlay image (the view draws only tiles again)."""
+        self.overlay_img = ""
+
     # ------------------------------------------------- M4: annotation editing
     def delete_annotation(self, feature_id: str) -> None:
         """Delete the annotation with the given id (the JS view's ``del``
@@ -646,6 +762,10 @@ class HtmlSlideViewer(widgets.Box):
         self.meta = self.backend.meta
         self.cache = TileCache(int(cache_max_mb * 1024 * 1024))
         self.tile_size = tile_size
+        # Overlay (same API as SlideViewer.set_overlay): a full-slide PNG
+        # data URL ("" = none) + its CSS opacity.
+        self._overlay_url = ""
+        self.overlay_alpha = 0.5
 
         fit = fit_zoom(self.meta, canvas_w, canvas_h)
         self._min_zoom = fit / 4.0
@@ -773,6 +893,35 @@ class HtmlSlideViewer(widgets.Box):
             raise ValueError(f"empty crop bbox: {bbox}")
         return self.backend.read_region((x0, y0), level, (x1 - x0, y1 - y0))
 
+    # ------------------------------------------------------- overlay (heatmap)
+    def set_overlay(
+        self,
+        source: str | Path | Image.Image,
+        alpha: float | None = None,
+        transparent: tuple[int, int, int] | None = (0, 0, 0),
+    ) -> None:
+        """Show a full-slide overlay image over the tiles (e.g. a model
+        heatmap PNG rendered at the slide's ``get_thumbnail`` scale).
+
+        See :meth:`SlideViewer.set_overlay` — identical contract (aspect
+        ratio must match the slide's, ``alpha`` sets the opacity,
+        ``transparent`` makes the key RGB pixel fully transparent).
+        """
+        tkey = _validate_transparent_key(transparent)
+        img = _load_overlay_image(source)
+        _apply_transparency(img, tkey)
+        w, h = self.meta.dimensions
+        _check_overlay_aspect(img, w, h)
+        self._overlay_url = png_data_url(img)
+        if alpha is not None:
+            self.overlay_alpha = alpha
+        self.render()
+
+    def clear_overlay(self) -> None:
+        """Remove the overlay image (the composite draws tiles only)."""
+        self._overlay_url = ""
+        self.render()
+
     # --------------------------------------------------------------- rendering
     def render(self) -> ReadPlan:
         """Recompute tiles for the current viewport and update the display."""
@@ -788,6 +937,18 @@ class HtmlSlideViewer(widgets.Box):
                 f'<img src="{url}" style="position:absolute;'
                 f'left:{left - m:.2f}px;top:{top - m:.2f}px;'
                 f'width:{w + 2 * m:.2f}px;height:{h + 2 * m:.2f}px;"/>'
+            )
+        if self._overlay_url:
+            # Full-slide overlay stretched over the slide's screen rect
+            # (the same l0->screen mapping the tiles use).
+            sw, sh = self.meta.dimensions
+            ox = (0 - vp.cx) * vp.zoom + vp.canvas_w / 2
+            oy = (0 - vp.cy) * vp.zoom + vp.canvas_h / 2
+            parts.append(
+                f'<img src="{self._overlay_url}" style="position:absolute;'
+                f'left:{ox:.2f}px;top:{oy:.2f}px;'
+                f'width:{sw * vp.zoom:.2f}px;height:{sh * vp.zoom:.2f}px;'
+                f'opacity:{self.overlay_alpha};pointer-events:none;"/>'
             )
         self.html.value = (
             f'<div style="position:relative;width:{vp.canvas_w}px;height:{vp.canvas_h}px;'

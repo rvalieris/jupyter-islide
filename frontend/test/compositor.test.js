@@ -3,7 +3,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawScene } from '../compositor.js';
+import { drawScene, drawOverlay } from '../compositor.js';
 
 function mockCtx() {
   const calls = { fill: 0, draw: [] };
@@ -125,4 +125,57 @@ test('drawScene reprojections under a local transform (smooth pan)', () => {
   assert.ok(Math.abs(left1 - ((512 - t1.cx) * t1.zoom + t1.canvasW / 2) + seam) < 1e-9);
   assert.ok(Math.abs(top1 - ((256 - t1.cy) * t1.zoom + t1.canvasH / 2) + seam) < 1e-9);
   assert.ok(Math.abs(w1 - (256 * 1.0 * t1.zoom + 2 * seam)) < 1e-9);
+});
+
+// ------------------------------------------------------------------ overlay
+const OVERLAY = { _ready: true, id: 'overlay' };
+
+test('drawOverlay stretches the image over the whole slide, at `alpha`', () => {
+  const t = { cx: 200, cy: 300, zoom: 0.5, canvasW: 400, canvasH: 400 };
+  const ctx = mockCtx();
+  ctx.globalAlpha = 1;
+  assert.equal(drawOverlay(ctx, { transform: t, meta: META, img: OVERLAY, alpha: 0.4 }), true);
+  assert.equal(ctx.calls.draw.length, 1);
+  const [img, left, top, w, h] = ctx.calls.draw[0];
+  assert.equal(img.id, 'overlay');
+  // slide origin (l0 0,0) -> screen; size = slide dimensions * zoom
+  assert.ok(Math.abs(left - ((0 - t.cx) * t.zoom + t.canvasW / 2)) < 1e-9);
+  assert.ok(Math.abs(top - ((0 - t.cy) * t.zoom + t.canvasH / 2)) < 1e-9);
+  assert.ok(Math.abs(w - META.dimensions[0] * t.zoom) < 1e-9);
+  assert.ok(Math.abs(h - META.dimensions[1] * t.zoom) < 1e-9);
+  // globalAlpha is restored for subsequent passes (tiles, annotations)
+  assert.equal(ctx.globalAlpha, 1);
+});
+
+test('drawOverlay is skipped for missing / not-ready / alpha=0 images', () => {
+  const t = { cx: 0, cy: 0, zoom: 1.0, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  assert.equal(drawOverlay(ctx, { transform: t, meta: META, img: null, alpha: 0.5 }), false);
+  assert.equal(
+    drawOverlay(ctx, { transform: t, meta: META, img: { _ready: false }, alpha: 0.5 }), false);
+  assert.equal(drawOverlay(ctx, { transform: t, meta: META, img: OVERLAY, alpha: 0 }), false);
+  assert.equal(ctx.calls.draw.length, 0);
+});
+
+test('drawOverlay is skipped when the slide is fully off-canvas', () => {
+  // Far east of the canvas: the whole slide lies right of the view.
+  const t = { cx: 1e7, cy: 0, zoom: 0.01, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  assert.equal(drawOverlay(ctx, { transform: t, meta: META, img: OVERLAY, alpha: 1 }), false);
+  assert.equal(ctx.calls.draw.length, 0);
+});
+
+test('drawOverlay reprojects under a local transform (smooth pan)', () => {
+  const t0 = { cx: 100, cy: 100, zoom: 2.0, canvasW: 512, canvasH: 512 };
+  const t1 = { cx: 400, cy: 100, zoom: 2.0, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  drawOverlay(ctx, { transform: t0, meta: META, img: OVERLAY, alpha: 1 });
+  drawOverlay(ctx, { transform: t1, meta: META, img: OVERLAY, alpha: 1 });
+  const [, l0, , w0] = ctx.calls.draw[0];
+  const [, l1, , w1] = ctx.calls.draw[1];
+  // panning the center +300 l0 px (zoom 2.0) moves the slide left by 600
+  // screen px; the stretched size is unchanged
+  assert.ok(Math.abs((l1 - l0) - (-600)) < 1e-9);
+  assert.ok(Math.abs(w1 - w0) < 1e-9);
+  assert.ok(Math.abs(w0 - META.dimensions[0] * 2.0) < 1e-9);
 });

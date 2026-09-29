@@ -654,6 +654,138 @@ with the mode toggle); undo (the reset paths are `clear_annotations()`
 live set; a GeoJSON export is not v1); `HtmlSlideViewer` (canvas view
 only, as in M2/M3).
 
+### 6.6 Smooth zoom (M5): springs, level cross-fade, center-first fetch
+
+M5 is **feel**: port the three ideas that make OpenSeadragon's zoom smooth —
+spring-animated pan/zoom, a temporal cross-fade across level changes, and
+viewport-center-first tile fetch — into the existing push architecture.
+The design rule stands: **Python owns all state and decoding; the JS view
+is a compositor** (§3). No new traits, no wire change (module version stays
+2.0.0; the labextension rebuild is still required for the JS changes),
+`HtmlSlideViewer` untouched. Attribution: the spring math is ported from
+openseadragon (BSD-3; `src/spring.js`) — credit in the file header.
+
+#### 6.6.1 Springs (view-local; `frontend/spring.js`, new pure module)
+
+The single local transform becomes a pair:
+
+- **`target`** — where the view is going. Every input writes it:
+  wheel (`zoomAtCursor` on the target, clamps applied at set-time so the
+  spring never animates past `[fit/4, 16]`), drag (pan the target per
+  pointermove), minimap jump, toolbar fit/1:1, and `change:viewport` from
+  Python (programmatic `center_on`/`set_zoom` get the same animation for
+  free). The debounced `viewport` sync sends the **target** (unchanged
+  wire form, unchanged 120 ms debounce, unchanged "sole writer" rule).
+- **`current`** — what the canvas shows. Three springs (`cx`, `cy`,
+  linear; `zoom`, **exponential** — interpolated in log-space so a ×2
+  wheel step animates evenly on a log-zoom axis), each:
+
+    `current(x) = start + (target − start) · T(k, x)` with
+    `T(k, x) = (1 − e^(−k·x)) / (1 − e^(−k))`, `x = elapsed / animationTime`
+    clamped to [0, 1] (OSD's exact curve; exponential = the same in
+    log-values). `stiffness = 5`, `animationTime = 350 ms` (zoom) / `150 ms`
+    (pan) — OSD ships 1.5 s; a WSI viewer should feel responsive, and the
+    curve is ~92 % arrived at `x = 0.5`.
+
+Re-targeting mid-flight is `springTo` from the *current* value (start =
+current: no jump — a wheel burst chains smoothly). The animation loop runs
+only while a spring is not at its target (rAF steps with the real frame
+delta; idle CPU stays 0, §9). The first viewport (initial fit / re-attach)
+uses `resetTo` — no animation on first show. `canvasW`/`canvasH` are never
+sprung (discrete; the existing RO size-resync applies to target and
+current together).
+
+Scene layout: tiles, the annotation overlay, the draft preview, and the
+minimap viewport rect all reproject under the **current** transform exactly
+as today (§6.2 local re-projection — no mechanism change). Pointer-
+*addressed* operations (M3 vertex clicks, M4 hit-test selection, the
+level-0 cursor readout) also use the **current** transform — what is on
+screen is what gets addressed; the springs settle in < 500 ms, so the
+discrepancy with the target is momentary. Wheel's cursor-pinning is computed
+on the **target** (that is the animation API).
+
+#### 6.6.2 Level cross-fade (view-local draw policy; `frontend/blend.js`, new pure module)
+
+Today a zoom that crosses a level boundary swaps `tile_geo` wholesale: the
+old level vanishes and the new one pops in at 100 % the moment the push
+lands. M5 cross-fades, temporally (OSD's `blendTime` idea):
+
+- **Accumulated tile map.** The view already merges `tiles` into `this._images`
+  (insertion-order LRU, 400 entries, never evicts a still-visible key in
+  practice). M5 makes `tile_geo` accumulate the same way: a view-local
+  `_tileGeo` map merged per push, evicted in lockstep with `_images` (same
+  key, same budget). `drawScene` draws from `_tileGeo`, not the latest trait
+  value — so the level a zoom is *leaving* stays on screen while the level
+  it is *entering* fills in tile by tile.
+- **Per-level alpha** — pure `levelAlphas(transition, zoom, levelDownsamples,
+  now) -> {level: alpha}`:
+  - `selected(z)` = the §4 rule (smallest `L` with `ds[L] >= 1/z`),
+    mirrored as `selectLevel` in `tilemath.js` and unit-tested against
+    `plan.select_level` on a shared downsample table.
+  - A **transition** is recorded when `selected(z)` changes between two
+    consecutive frames: `{from, to, start}` (either direction).
+  - During a transition (default `BLEND_MS = 300`): the **new** level draws
+    at alpha 1, the **old** level at `1 − (now − start)/BLEND_MS` (clamped);
+    other levels at 0. No transition: the selected level at 1, others 0.
+  - Same-level pushes (a pan) never start a transition — tiles appear at
+    full alpha as they arrive, as today.
+- **Compositor** (`drawScene` gains `levelAlphas`): white underlay, then
+  present levels **coarsest first** (finest on top, OSD draw order), each
+  pass at its `globalAlpha`, seam margin and DPR handling unchanged. The
+  coarse-on-bottom ordering means the fading old level covers the screen
+  while the new level's tiles land on top of it — no holes at either end of
+  the fade.
+- Big zoom jumps that skip an intermediate level fade directly
+  (old level out, endpoint in); OSD behaves the same.
+
+Memory: the cross-fade transiently holds two levels; the 400-entry image
+LRU is sized for this (a 960×540 canvas needs well under 100 tiles per
+level). Tile *transfer* is unchanged — the kernel pushes exactly the
+plan's level per viewport, as today; the fade is over data already in
+transit/on screen, not extra bytes.
+
+#### 6.6.3 Center-first fetch (Python: `plan.py` + `fetch.py` + `widget.py`)
+
+OSD's priority queue exists because its browser fetches are independent
+HTTP jobs; ours are sequential local `read_region` calls on one thread, so
+the ported *idea* is **fetch order = viewport center first**, implemented as
+a pre-sorted chunk list (the chunks are all known at plan time — no heap):
+
+- `ReadPlan` gains `chunks`: the viewport's grid cells grouped into
+  **grid-anchored blocks of 4×4 tiles** (1024 level px), each block's read
+  rect = the union of its cells clamped to the level bounds — the exact
+  §5 invariant, so the `(level, tx, ty)` cache key and the viewport-
+  invariance regression test are untouched. Chunks ordered by block-center
+distance to the viewport center (the center block first). A plan whose
+  viewport fits one block is a single chunk — the current behavior byte-for-
+  byte, including the common zoomed-out case.
+- `fetch_tiles` iterates chunks in order (a chunk is skipped when every
+  tile in it is cached; otherwise one `read_region` for the block, crop,
+  cache — the §5.1 "one big read, crop in Python" strategy, just smaller
+  and ordered). ~4 blocks for a 1280×720 canvas; the extra decode setups
+  are cheap against a single viewport-sized read.
+- **Two-stage push** (this is what makes center-first visible): `_render_once`
+  pushes `tiles`/`tile_geo` (a) after the center chunk — partial set — and
+  (b) after the remaining chunks — the full set. Single-chunk plans push
+  once, as today. The trait *semantics* become "tiles available so far for
+  the current viewport"; the **final** value after a render is identical to
+  today's full-viewport set, so re-attach replay and every existing
+  contract (keys, `tile_geo` geometry, status) hold. A partial push from a
+  superseded viewport is harmless: the JS side only merges, and the render
+  loop's coalescing re-plans from the latest viewport. Comm cost: one extra
+  ~50–150 KB partial push per multi-chunk render, only at mid/zoomed-in
+  levels.
+
+#### 6.6.4 Unchanged / out of scope
+
+Wire contract (no new traits; module version 2.0.0), the 120 ms debounce
+(measure before touching it — the 350 ms zoom spring roughly covers
+debounce + round trip), M2–M4 annotation behavior, `read_crop`, the Python
+API, `HtmlSlideViewer`, `TileCache` (byte budget, keying), the OpenSlide
+backend. Explicitly *not* in M5: WebGL compositing, off-screen prefetch
+(the LRU covers back-pans), per-tile (sub-level) fades, parallel fetch
+threads, touch pinch, keyboard navigation, OSD-style reference strip.
+
 ## 7. Python API
 
 ```python
@@ -703,7 +835,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
 | `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
-| `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push |
+| `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push; M5: the *final* push of a render is the full viewport set, but a multi-chunk render pushes a partial (center-first, §6.6.3) set en route — the JS view merges, never evicts per push |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
 | `annotations` | Py→JS | dict | the normalized annotation document — a restricted GeoJSON `FeatureCollection` in level-0 px (§6.3); M2: imported set, M3: drawn polygons appended (§6.4) |
@@ -779,6 +911,7 @@ Environment checked during design (openslide-python 1.4.6, libopenslide 4.0.1):
 | Time to first pixel (local file, after kernel import) | < 2 s on a typical SVS (open on bg thread; minimap first) |
 | Pan responsiveness (cached region) | ≤ 1 frame of perceived lag; tiles already on JS side |
 | Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
+| Zoom into uncached region (M5) | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms), the rest of the viewport follows in the same render pass |
 | Tile transfer per full viewport | ≤ ~400 KB (≈ 20 tiles × 20 KB JPEG) |
 | Steady-state memory (cache on) | 256 MB default budget + slide handle overhead |
 | Idle CPU | 0 (no polling; everything is trait-driven) |
@@ -795,9 +928,10 @@ fetch pass.
 | M1 ✅ | **Interactive JS view** *(done)*. Canvas compositor (`compositor.js` + pure `tilemath.js`), wheel/drag/dblclick pan-zoom at the cursor, minimap with viewport rect, −/+/fit/1:1 toolbar, DPR-aware canvas, `ResizeObserver` resize. Trait contract per §7; viewport sync is JS-written + debounced (120 ms) + coalesced onto a Python background render thread. M0's HTML viewer is kept as the standalone class `HtmlSlideViewer` (no-extension fallback / reference pipeline), and the Python-side `SlideViewer` gained the background open + `wait()` + programmatic viewport API the JS view drives. **Not yet covered:** in-browser verification (no browser in the dev sandbox — the view is verified by node unit tests of the pure math/compositor/draw state + headless widget tests; the extension build path is documented, see §11). | `examples/m1_demo.ipynb` (canvas) + smooth pan/zoom |
 | M2 ✅ | **Read-only annotations** *(done)*. GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing (M3 adds polygon *drawing*, §6.4). | `examples/m2_demo.ipynb`: `set_annotations` (inline GeoJSON, level-0 px + microns) + smooth pan/zoom over the overlay |
 | M3 ✅ | **Polygon drawing** *(done)*. Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, wheel/minimap live); M1's double-click zoom gesture is removed (unnecessary); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. Tile JPEG quality becomes a constructor argument (`jpeg_quality`, default 85; the §5.3 PNG fallback is dropped — exact pixels via `read_crop()`). | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
-| M3.5 | **Canonical GeoJSON annotation format.** The M2/M3 flat shape list becomes the annotation document of §6.3: the `annotations` trait is a `Dict` (empty-`FeatureCollection` default; trait assignment coerced through the normalizer); `set_annotations(doc, units)` keeps its contract — validate → normalize → assign → push — and the stored/returned value *is* the document; the `last_polygon` observer appends a `Polygon` feature (fresh non-colliding id, empty `properties`); the renderer iterates features over three primitives (markers / open path / evenodd ring-set) and reads `label`/`color`/`fill` from `properties`. `MultiPoint` / `MultiPolygon` stay whole; `GeometryCollection` expands at import; degenerate members drop with warnings; ids unique (collision → `ValueError`) and stable — fixing the M2 duplicate-id bug. Wire-contract change: module version 1.0.0 → 2.0.0 + labextension rebuild; the `last_polygon` and planned `annotation_edit` contracts are unchanged. | `tests/test_annotations.py` (canonical document over all six source geometry types; units; degenerate drops; id uniqueness; `properties` pass-through), `test_widget_m2.py` / `test_widget_m3.py` (document trait; `last_polygon` appends a feature), `frontend/test/annotations.test.js` (three primitives; per-feature guard); `examples/m2_demo.ipynb` + `m3_demo.ipynb`: same behavior, `v.annotations` is the document |
-| M4 | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
-| M5 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
+| M3.5 ✅ | **Canonical GeoJSON annotation format.** The M2/M3 flat shape list becomes the annotation document of §6.3: the `annotations` trait is a `Dict` (empty-`FeatureCollection` default; trait assignment coerced through the normalizer); `set_annotations(doc, units)` keeps its contract — validate → normalize → assign → push — and the stored/returned value *is* the document; the `last_polygon` observer appends a `Polygon` feature (fresh non-colliding id, empty `properties`); the renderer iterates features over three primitives (markers / open path / evenodd ring-set) and reads `label`/`color`/`fill` from `properties`. `MultiPoint` / `MultiPolygon` stay whole; `GeometryCollection` expands at import; degenerate members drop with warnings; ids unique (collision → `ValueError`) and stable — fixing the M2 duplicate-id bug. Wire-contract change: module version 1.0.0 → 2.0.0 + labextension rebuild; the `last_polygon` and planned `annotation_edit` contracts are unchanged. | `tests/test_annotations.py` (canonical document over all six source geometry types; units; degenerate drops; id uniqueness; `properties` pass-through), `test_widget_m2.py` / `test_widget_m3.py` (document trait; `last_polygon` appends a feature), `frontend/test/annotations.test.js` (three primitives; per-feature guard); `examples/m2_demo.ipynb` + `m3_demo.ipynb`: same behavior, `v.annotations` is the document |
+| M4 ✅ | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
+| M5 | **Smooth zoom.** The OSD feel, ported into the push architecture (§6.6): (a) *springs* — the local transform splits into a **target** (every input; the `viewport` sync) and a **current** (what the canvas shows), animated by three time-parameterized springs (cx/cy linear, zoom exponential in log-space; ported from openseadragon, BSD-3) — wheel/drag/minimap/toolbar *and* programmatic `set_zoom`/`center_on` all animate; the animation loop runs only while a spring is active (idle CPU 0). (b) *level cross-fade* — `tile_geo` accumulates view-side (evicted in lockstep with the 400-image LRU); when the §4 selected level changes the compositor draws the new level at alpha 1 and fades the old one out over 300 ms, coarsest-first (pure `blend.js`, no wire change, no extra bytes — the kernel still pushes one plan-level per viewport). (c) *center-first fetch* — the read plan is split into grid-anchored 4×4-tile (1024 px) blocks sorted by distance to the viewport center (the OSD priority-queue idea as a pre-sorted list — no heap; the §5 cache-key invariant and the viewport-invariance regression test are untouched), and `_render_once` pushes in two stages (center chunk, then the full set) so the viewport center appears first; single-block plans (the zoomed-out case) push once, byte-for-byte as today. No new traits; module version 2.0.0; `HtmlSlideViewer` untouched. Out: WebGL, prefetch, per-tile fades, parallel fetch, touch pinch (§6.6.4). | `examples/m5_demo.ipynb`: wheel-zoom/pan walkthrough (spring + cross-fade), programmatic `set_zoom` steps animate, M3 draw + M4 select during/after animation; `tests/test_plan.py` (chunking, center-first order, single-chunk regression), `test_widget_m5.py` (two-stage push; final trait == full set), `frontend/test/spring.test.js`, `frontend/test/blend.test.js`, compositor multi-level alpha |
+| M6 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 ## 11. Testing
 
@@ -881,6 +1015,35 @@ fetch pass.
   `selectedId` (accent stroke, wider width, drawn last). Contract:
   `annotation_edit` added to `defaults.js` — covered by the existing
   cross-language name guard.
+- **M5 smooth-zoom tests:** Python (`tests/test_plan.py` additions +
+  `tests/test_widget_m5.py`): chunking — a viewport inside one 1024 px
+  block yields a single chunk **identical to the pre-M5 plan** (level, loc,
+  size, read_origin, tiles, crops: byte-for-byte regression); a wider
+  viewport yields ≥ 2 chunks with the viewport-center block **first**
+  (distance order, tie-break by reading order), every chunk's read rect
+  grid-anchored and clamped (the §5 invariant per chunk), and the union of
+  chunk tiles == the whole-viewport tile set. Widget: two-stage push — a
+  multi-chunk render assigns `tiles`/`tile_geo` twice, the first value a
+  strict subset of the final one (spied via a subclass or a
+  `read_region`-instrumented `FakeSlide`), the **final** value identical to
+  the pre-M5 full-viewport set (keys, `tile_geo` geometry, payload —
+  `test_widget_m1.py`'s cache-invariance and tile-contract tests pass
+  unchanged); a single-chunk render pushes exactly once; a superseded
+  (dirty) render mid-pass leaves the final traits consistent with the
+  latest viewport. JS (`frontend/test/`): `spring.test.js` — the OSD
+  easing `T(k, 0) = 0`, `T(k, 1) = 1`, monotone in `x`; a spring reaches
+  its target exactly at `animationTime`; mid-flight `springTo` is
+  continuous (no value jump at the re-target instant); the exponential
+  spring interpolates in log-space (equal wheel factors move equal
+  log-zoom per unit `x`); `resetTo`/`isAtTarget`. `blend.test.js` —
+  `selectLevel` matches `plan.select_level` on a shared downsample table
+  (the §4 rule, both sides, incl. the coarsest-level fallback); a
+  transition is recorded on a selected-level change and only then
+  (same-level pan: none); the alpha schedule — new level 1, old level
+  `1 → 0` over `BLEND_MS` (clamped, direction-independent: zoom-in and
+  zoom-out), stale/other levels 0; a new transition replaces the old.
+  `compositor.test.js` — multi-level draw with per-level `globalAlpha`,
+  coarsest-first ordering, seam margin and skip-not-ready unchanged.
 - **Cross-language contract test:** the Python synced trait names are
   asserted to equal the keys in `frontend/defaults.js` (both directions of
   the same guard), so the comm contract can't drift.
@@ -913,6 +1076,7 @@ islide/
 │   └── encode.py             # tile -> JPEG data URL
 └── frontend/                 # JS canvas view (npm: jupyter-islide)
     ├── tilemath.js  compositor.js  annotations.js  polydraw.js  model.js  view.js
+    ├── spring.js  blend.js          # M5: spring animation + level cross-fade (pure)
     ├── defaults.js  labextension.js  index.js  style/index.css
     ├── labextension/  # build output (gitignored) — compiled labextension
     └── test/             # node --test (pure math + compositor)

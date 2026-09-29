@@ -24,3 +24,18 @@ def jpeg_data_url(img: Image.Image, quality: int = 85) -> str:
     img.save(buf, format="JPEG", quality=quality)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return "data:image/jpeg;base64," + b64
+
+
+def png_data_url(img: Image.Image) -> str:
+    """Encode an image as a base64 PNG data URL (alpha preserved).
+
+    PNG, unlike the tile JPEGs, keeps a real alpha channel — this is the
+    transport for overlay/heatmap images, which must composite over the
+    slide with transparency.
+    """
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return "data:image/png;base64," + b64
