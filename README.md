@@ -12,7 +12,7 @@ of the selected pyramid level **cross-fades** (the old level fades out
 over 300 ms while the new level draws at full opacity). No new traits,
 no wire-format change (`tiles` / `tile_geo` are exactly as before). The
 canvas view also carries a GeoJSON **annotation document** overlay
-(points, lines, polygons — level-0 px or microns) that accepts
+(points, lines, polygons — level-0 slide px) that accepts
 **hand-drawn polygons** (the **annotate** button or **A**, left-click the
 vertices, **A** to save) and supports **editing existing shapes**: click
 to select, then **del** / **label** / **color** in the toolbar (or the
@@ -91,12 +91,10 @@ single `Feature` or a bare geometry is accepted too). The synced
 plain-JSON `FeatureCollection` in level-0 px — rings open, coordinates
 finite floats, ids assigned, `properties` kept whole. Features render on
 an overlay canvas with per-feature `color`/`fill`/`label` properties and a
-toolbar alpha slider; coordinates are level-0 px by default or microns
-(`units="um"`, requires the slide's mpp):
+toolbar alpha slider; coordinates are level-0 slide px:
 
 ```python
-v.set_annotations("roi.geojson")
-v.set_annotations(doc, units="um")
+v.set_annotations("roi.geojson")   # str / Path, or a parsed dict
 v.annotations      # canonical document (GeoJSON FeatureCollection, level-0 px)
 v.clear_annotations()
 ```

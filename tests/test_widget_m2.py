@@ -3,8 +3,7 @@
 Covers: the synced `annotations` trait (starts as an empty canonical
 document, JSON-serializable, assignments coerced through the normalizer),
 set_annotations from dict and from file (replace semantics, returns the
-canonical document), clear_annotations, and the units="um" path (waits for
-open, converts via the slide's mpp).
+canonical document), and clear_annotations.
 """
 from __future__ import annotations
 
@@ -125,29 +124,8 @@ def test_trait_assignment_is_coerced_through_the_normalizer(viewer):
     assert viewer.annotations["features"][0]["id"] == "a0"
 
 
-def test_set_annotations_um_uses_slide_mpp(viewer):
-    # the test slide's mpp is 1000 um/px: (1000 um, 2000 um) -> (1 px, 2 px)
-    assert viewer._meta.mpp == pytest.approx(1000)
-    doc = viewer.set_annotations(
-        {"type": "Point", "coordinates": [1000, 2000]}, units="um")
-    assert viewer.annotations == doc
-    assert doc["features"][0]["geometry"]["coordinates"] == [1.0, 2.0]
-
-
-def test_set_annotations_um_waits_for_open(slide_path):
-    v = SlideViewer(slide_path)
-    try:
-        assert not v.slide_open
-        v.set_annotations({"type": "Point", "coordinates": [1000, 2000]}, units="um")
-        assert v.slide_open
-        f = v.annotations["features"][0]
-        assert f["geometry"]["coordinates"] == [1.0, 2.0]
-    finally:
-        v.close()
-
-
-def test_set_annotations_px_does_not_wait_for_open(slide_path):
-    # px mode never needs the slide: no wait, no mpp
+def test_set_annotations_does_not_wait_for_open(slide_path):
+    # import never needs the slide: no wait
     v = SlideViewer(slide_path)
     try:
         doc = v.set_annotations({"type": "Point", "coordinates": [7, 8]})

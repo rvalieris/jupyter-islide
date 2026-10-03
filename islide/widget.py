@@ -560,17 +560,12 @@ class SlideViewer(widgets.DOMWidget):
         return self.backend.read_region((x0, y0), level, (x1 - x0, y1 - y0))
 
     # ------------------------------------------------- M2: read-only annotations
-    def set_annotations(
-        self, source: str | Path | dict, units: str = "px"
-    ) -> dict:
+    def set_annotations(self, source: str | Path | dict) -> dict:
         """Import a GeoJSON annotation document (replaces the current set).
 
         ``source`` is a GeoJSON file path or an already-parsed document
-        (dict). ``units``: ``"px"`` (default) treats the document's
-        coordinates as level-0 slide px; ``"um"`` treats them as microns
-        from the slide origin and converts them with the slide's mpp
-        (waits for the slide to open, and raises ``ValueError`` if the
-        slide has no mpp).
+        (dict); its coordinates are level-0 slide px. The slide need not
+        be open.
 
         Returns the canonical annotation document (a GeoJSON
         ``FeatureCollection`` in level-0 px of ``{id, geometry,
@@ -581,16 +576,7 @@ class SlideViewer(widgets.DOMWidget):
             doc: dict = json.loads(Path(source).read_text())
         else:
             doc = source
-        mpp: float | None = None
-        if units == "um":
-            self.wait()
-            meta = self._meta
-            mpp = meta.mpp if meta is not None else None
-            if mpp is None:
-                raise ValueError(
-                    "units='um' requires the slide's mpp; this slide has none"
-                )
-        parsed = parse_annotations(doc, units=units, mpp=mpp)
+        parsed = parse_annotations(doc)
         self.annotations = parsed
         return self.annotations
 

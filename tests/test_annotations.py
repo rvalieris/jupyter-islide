@@ -298,34 +298,12 @@ class TestProperties:
         assert features(doc)[0]["properties"] == {}
 
 
-# ----------------------------------------------------------------------- units
-class TestUnits:
-    def test_px_is_default_and_unscaled(self):
+# ----------------------------------------------------------- coordinate values
+class TestCoordinates:
+    def test_px_coordinates_pass_through(self):
+        # level-0 slide px, as given (coerced to float)
         doc = parse_annotations(point(2, 3))
         assert features(doc)[0]["geometry"]["coordinates"] == [2.0, 3.0]
-
-    def test_um_is_scaled_by_mpp(self):
-        doc = parse_annotations(
-            {
-                "type": "MultiPolygon",
-                "coordinates": [
-                    [[[0, 0], [1000, 0], [1000, 1000]]],  # 1000 um squares
-                ],
-            },
-            units="um",
-            mpp=0.5,  # px = um / mpp: 1000 um -> 2000 px
-        )
-        assert features(doc)[0]["geometry"]["coordinates"][0][0] == [
-            [0.0, 0.0], [2000.0, 0.0], [2000.0, 2000.0]
-        ]
-
-    def test_um_requires_mpp(self):
-        with pytest.raises(ValueError, match="mpp"):
-            parse_annotations(point(0, 0), units="um")
-
-    def test_bad_units_raise(self):
-        with pytest.raises(ValueError, match="units"):
-            parse_annotations(point(0, 0), units="ft")
 
 
 # ----------------------------------------------------------- degenerate drops

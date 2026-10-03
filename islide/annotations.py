@@ -10,11 +10,8 @@ renders read-only:
          "properties": <object>}, ...]}
 
 * **Level-0 slide px** (origin at the slide origin, **y down**, no CRS):
-  ``units="px"`` (default) means the document's coordinates already are;
-  ``units="um"`` means microns from the slide origin, converted with
-  ``mpp`` (``px = um / mpp``; one mpp for both axes — the slide's mpp-x).
-  The conversion happens before the degenerate checks. A position's third
-  component (z) is dropped.
+  the document's coordinates already are level-0 slide px — no other unit
+  convention is supported. A position's third component (z) is dropped.
 * **Structure-preserving**: a ``Point``/``MultiPoint``/``LineString``/
   ``Polygon``/``MultiPolygon`` stays one feature, whole (a ``Multi*`` keeps
   all of its members). A ``GeometryCollection`` expands to one feature per
@@ -69,27 +66,26 @@ _DEGENERATE_AREA = 1e-6      # px^2
 _DEGENERATE_LENGTH = 1e-6    # px
 
 
-def parse_annotations(doc: Any, units: str = "px", mpp: float | None = None) -> dict:
+def parse_annotations(doc: Any) -> dict:
     """Normalize a GeoJSON annotation document into the canonical document.
 
     ``doc`` is the parsed document (dict): a GeoJSON ``FeatureCollection``,
-    a single ``Feature``, or a bare geometry (all six types). Returns a
-    *new* document of the form ``{"type": "FeatureCollection", "features":
+    a single ``Feature``, or a bare geometry (all six types). Coordinates
+    are level-0 slide px. Returns a *new* document of the form
+    ``{"type": "FeatureCollection", "features":
     [{type, id, geometry, properties}, ...]}`` (see the module docstring);
     nothing is mutated, and the input may be shared.
 
-    Raises ``ValueError`` on malformed input or on ``units="um"`` without a
-    positive finite ``mpp``; degenerate but well-formed members are skipped
-    with a ``UserWarning``.
+    Raises ``ValueError`` on malformed input; degenerate but well-formed
+    members are skipped with a ``UserWarning``.
     """
-    scale = _scale(units, mpp)
     features: list[dict] = []
     used: set[str] = set()
     for geom, props, fid in _document_features(doc):
         if geom is None:
             continue  # Feature with null geometry: legal, produces nothing
         _check_props(props)
-        leaves = _expand_geometry(geom, scale)
+        leaves = _expand_geometry(geom)
         if not leaves:
             if geom["type"] in ("MultiPolygon", "GeometryCollection"):
                 warnings.warn(
@@ -119,23 +115,6 @@ def parse_annotations(doc: Any, units: str = "px", mpp: float | None = None) -> 
                 }
             )
     return {"type": "FeatureCollection", "features": features}
-
-
-def _scale(units: str, mpp: float | None) -> float:
-    if units not in ("px", "um"):
-        raise ValueError(f"units must be 'px' or 'um', got {units!r}")
-    if units == "px":
-        return 1.0
-    if (
-        isinstance(mpp, bool)
-        or not isinstance(mpp, (int, float))
-        or not math.isfinite(mpp)
-        or mpp <= 0
-    ):
-        raise ValueError(
-            "units='um' requires a positive finite mpp (slide mpp-x)"
-        )
-    return 1.0 / float(mpp)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +194,7 @@ def _take_id(used: set[str], fid: str | None) -> str:
 # geometry expansion
 
 
-def _expand_geometry(geom: dict, scale: float) -> list[dict]:
+def _expand_geometry(geom: dict) -> list[dict]:
     """Expand a geometry into canonical leaf geometries (level-0 px).
 
     ``Point``/``MultiPoint``/``LineString``/``Polygon``/``MultiPolygon``
@@ -229,33 +208,33 @@ def _expand_geometry(geom: dict, scale: float) -> list[dict]:
 
     if gtype == "Point":
         x, y = _coord(coords, gtype)
-        return [{"type": "Point", "coordinates": [x * scale, y * scale]}]
+        return [{"type": "Point", "coordinates": [x, y]}]
 
     if gtype == "MultiPoint":
         positions = _positions(coords, gtype, min_len=0)
         return [
             {
                 "type": "MultiPoint",
-                "coordinates": [[x * scale, y * scale] for x, y in positions],
+                "coordinates": [[x, y] for x, y in positions],
             }
         ]
 
     if gtype == "LineString":
-        scaled = [
-            [x * scale, y * scale]
+        pts = [
+            [x, y]
             for x, y in _positions(coords, gtype, min_len=2)
         ]
-        if _path_length(scaled) < _DEGENERATE_LENGTH:
+        if _path_length(pts) < _DEGENERATE_LENGTH:
             warnings.warn(
                 f"islide: skipping degenerate {gtype} annotation "
                 "(zero length)",
                 UserWarning,
             )
             return []
-        return [{"type": "LineString", "coordinates": scaled}]
+        return [{"type": "LineString", "coordinates": pts}]
 
     if gtype == "Polygon":
-        rings = _rings(coords, gtype, scale)
+        rings = _rings(coords, gtype)
         if rings is None:
             warnings.warn(
                 f"islide: skipping degenerate {gtype} annotation (zero area)",
@@ -271,7 +250,7 @@ def _expand_geometry(geom: dict, scale: float) -> list[dict]:
             )
         islands = []
         for island in coords:
-            rings = _rings(island, gtype, scale)
+            rings = _rings(island, gtype)
             if rings is None:
                 warnings.warn(
                     f"islide: skipping degenerate {gtype} annotation "
@@ -290,7 +269,7 @@ def _expand_geometry(geom: dict, scale: float) -> list[dict]:
     for g in geoms:
         if g is None:
             continue
-        out.extend(_expand_geometry(g, scale))
+        out.extend(_expand_geometry(g))
     return out
 
 
@@ -365,8 +344,8 @@ def normalize_ring(ring: Any) -> list[list[float]] | None:
     return [[x, y] for x, y in pts]
 
 
-def _rings(coords: Any, what: str, scale: float) -> list[list[list[float]]] | None:
-    """Outer + hole rings scaled to level-0 px, or ``None`` if any ring is
+def _rings(coords: Any, what: str) -> list[list[list[float]]] | None:
+    """Outer + hole rings in level-0 px, or ``None`` if any ring is
     degenerate (the caller decides the warning)."""
     if not isinstance(coords, list) or not coords:
         raise ValueError(f"{what}: coordinates must be a non-empty list of rings")
@@ -377,7 +356,7 @@ def _rings(coords: Any, what: str, scale: float) -> list[list[list[float]]] | No
         if not isinstance(ring, list) or len(ring) < 3:
             raise ValueError(f"{what}: each ring needs at least 3 positions")
         pts = [_coord(p, what) for p in ring]
-        rings.append([[x * scale, y * scale] for x, y in pts])
+        rings.append([[x, y] for x, y in pts])
     norm = [normalize_ring(r) for r in rings]
     if any(r is None for r in norm):
         return None

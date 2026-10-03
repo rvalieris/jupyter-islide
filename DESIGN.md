@@ -371,12 +371,8 @@ lives):
   degenerate members dropped, ids/`properties` normalized. GeoJSON in →
   same-structure GeoJSON out (modulo dropped degenerates), so the stored
   document reads back to its source's shape.
-- Units, chosen at import: `units="px"` (default) — coordinates already
-  level-0 px; `units="um"` — microns from the origin, converted to
-  level-0 px via the slide's mpp (`px = um / mpp`, one mpp for both
-  axes — WSIs are isotropic to within rounding). Physical,
-  vendor-agnostic convention: a re-scan of the same tissue keeps its
-  annotations. Requires mpp (`ValueError` otherwise).
+- Coordinates are level-0 slide px (origin at the slide origin, **y
+  down**, no CRS) — no other unit convention is supported.
 - Degenerates (same thresholds as the M2 parser): a `MultiPolygon` loses
   degenerate islands (warning); a feature left with nothing is dropped
   (warning); a `Polygon` with any degenerate ring — including a hole —
@@ -430,13 +426,12 @@ image canvas, drawn after the tiles):
 
 ```python
 v.set_annotations("roi.geojson")     # str / Path, or a parsed dict
-v.set_annotations(doc, units="um")   # coordinates in microns (requires mpp)
 v.clear_annotations()
 v.annotations      # the normalized document (FeatureCollection, level-0 px)
 ```
 
-`set_annotations` replaces the current set and waits for the slide if
-needed (the `um` conversion requires mpp).
+`set_annotations` replaces the current set; coordinates are level-0 slide
+px, so it never needs the slide open.
 
 **Not in M2** (explicit): any UI editing (no add-on-click, drag, edit,
 or delete — polygon drawing is M3, §6.4; select/delete/label/recolor is
@@ -774,7 +769,7 @@ bbox = v.viewport_bbox()       # (x0, y0, x1, y1) in slide coords, clamped
 img = v.read_crop(bbox)        # PIL Image at level 0 (RGBA)
 
 # annotations (M2)
-v.set_annotations("roi.geojson")   # level-0 px (default); units="um" for microns (needs mpp)
+v.set_annotations("roi.geojson")   # level-0 slide px; str / Path or a parsed dict
 v.clear_annotations()
 v.annotations                     # the normalized document — the GeoJSON export itself (§6.3)
 
@@ -941,12 +936,11 @@ historical record and keep their references. |
   error path, `close()` idempotence.
 - **M2 annotation tests:** pure parser unit tests (`tests/test_annotations.py`,
   no OpenSlide): FeatureCollection/Feature/bare-geometry documents, Multi* +
-  GeometryCollection, um→px conversion at a fixed mpp, properties (label/
-  color/defaults), `units="px"`, error paths (um without mpp, malformed
-  document), degenerate-feature skip with warning. Headless widget
+  GeometryCollection, properties (label/color/defaults), error paths
+  (malformed document), degenerate-feature skip with warning. Headless widget
   (`tests/test_widget_m2.py`): `set_annotations`/`clear_annotations` →
-  `annotations` trait shape and level-0 values, replace semantics,
-  wait-for-open. JS (`frontend/test/annotations.test.js`): `drawAnnotations`
+  `annotations` trait shape and level-0 values, replace semantics, no-wait
+  import. JS (`frontend/test/annotations.test.js`): `drawAnnotations`
   against a mock ctx — culling, per-kind draw calls, screen-constant widths,
   `color`/`fill` defaults (black/transparent), alpha (`globalAlpha`),
   label rendering. Trait contract: `annotations` added to `defaults.js`,
@@ -969,11 +963,11 @@ historical record and keep their references. |
   source geometry types — `MultiPoint` / `MultiPolygon` kept whole,
   `GeometryCollection` expanded, `properties` pass-through (unknown keys
   preserved), ids unique (collision now `ValueError` — the M2
-  duplicate-stamp bug), units, degenerate drops (islands, rings, short
+  duplicate-stamp bug), degenerate drops (islands, rings, short
   lines) with warnings, bare-geometry + single-Feature inputs. Headless
   widget (`tests/test_widget_m2.py` / `test_widget_m3.py`): `annotations`
   is the document (empty-FC default, `set_annotations` replace semantics,
-  wait-for-open); `last_polygon` appends a `Polygon` feature (fresh
+  no-wait import); `last_polygon` appends a `Polygon` feature (fresh
   non-colliding id, empty `properties`). JS
   (`frontend/test/annotations.test.js`): the three draw primitives
   (markers incl. `MultiPoint` loops, open path, evenodd ring-set incl.
