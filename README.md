@@ -16,8 +16,7 @@ canvas view also carries a GeoJSON **annotation document** overlay
 **hand-drawn polygons** (the **annotate** button or **A**, left-click the
 vertices, **A** to save) and supports **editing existing shapes**: click
 to select, then **del** / **label** / **color** in the toolbar (or the
-same Python API). A pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is
-kept as the no-extension fallback and as the reference pipeline.
+same Python API).
 
 ## Install
 
@@ -32,8 +31,7 @@ The release wheel **bundles the pre-built `frontend/` JupyterLab widget
 extension**, so a single `pip install` gives you both the Python API and the
 interactive `SlideViewer` — no separate npm/extension step. The extension is
 installed to `share/jupyter/labextensions/jupyter-islide/`, which JupyterLab 4
-discovers automatically. Without the JS extension (e.g. a host that doesn't
-load labextensions), use `HtmlSlideViewer` — identical pipeline, no custom JS.
+discovers automatically.
 
 ### Building the release wheel
 
@@ -123,7 +121,6 @@ model output) become fully transparent; pass `transparent=(r, g, b)` for
 another key or `transparent=None` to keep the image's alpha as-is. PNG
 transport keeps the alpha channel: a heatmap on a transparent background
 (e.g. matplotlib's default colormap) composites cleanly over the slide.
-Available on both `SlideViewer` and `HtmlSlideViewer`.
 
 **Drawing (M3).** The canvas view adds polygons by hand: click the canvas
 (for keyboard focus), press **A** (crosshair), **left-click** the
@@ -175,26 +172,17 @@ slide object instead of a path — exactly one of the two:
 v = SlideViewer(slide=my_library.open_slide("my/other/slide.type"))
 ```
 
-`HtmlSlideViewer` accepts the same `slide=` argument. The viewer takes
-ownership of the object and closes it on `close()`.
+The viewer takes ownership of the object and closes it on `close()`.
 
 The mouse does the rest: **scroll** zooms at the cursor, **drag** pans,
 and the **minimap** jumps the view. Pan/zoom is applied instantly in the
 view (a local transform) and the new viewport is synced back to Python
 (debounced), which fetches any missing tiles.
 
-No-custom-JS fallback (M0 HTML tile composite, toolbar/slider driven):
-
-```python
-from islide import HtmlSlideViewer
-v = HtmlSlideViewer("data/testslide.tiff")
-display(v)
-```
-
 Run `examples/m5_demo.ipynb` (rendering feel: center-first chunks and the
 cross-fade), `examples/m4_demo.ipynb` (editing), `examples/m3_demo.ipynb`
-(drawing), `examples/m2_demo.ipynb` (annotations), `examples/m1_demo.ipynb`
-(canvas), or `examples/m0_demo.ipynb` (HTML) for a walkthrough.
+(drawing), `examples/m2_demo.ipynb` (annotations), or
+`examples/m1_demo.ipynb` (canvas) for a walkthrough.
 
 ## Layout
 
@@ -209,7 +197,7 @@ islide/
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read per chunk, cropped)
   encode.py    tile -> JPEG data URL
-  widget.py    SlideViewer (M1 custom widget) + HtmlSlideViewer (M0 fallback)
+  widget.py    SlideViewer (custom widget: tiles, overlay, annotations)
 
 frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   tilemath.js     pure viewport/tile math (+ selected-level mirror)
@@ -228,7 +216,7 @@ data/            test slide (whole-slide TIFF, 37382x73222, 8 levels)
 
 ## Tests
 
-Python (pipeline + M0–M5 widget, headless):
+Python (pipeline + M1–M5 widget, headless):
 
 ```bash
 pip install -e ".[dev]"

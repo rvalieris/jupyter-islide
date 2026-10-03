@@ -4,8 +4,8 @@
  *
  * The view keeps a local transform (smooth pan/zoom between Python
  * round-trips); tiles carry level-space geometry and are reprojected here.
- * Tiles are 256px-grid crops, drawn at their exact screen rectangle — the
- * same math the M0 HTML compositor used, but without per-<img> seams.
+ * Tiles are 256px-grid crops, drawn at their exact screen rectangle, with a
+ * half-px seam margin so adjacent tiles overlap (SEAM_MARGIN below).
  */
 import * as math from './tilemath.js';
 

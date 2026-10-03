@@ -174,9 +174,9 @@ e.g. 1280 × 720 ≈ 3.7 MB RGBA) and slice it into tiles. Consequences:
 
 A small custom widget view (`frontend/`, npm name `jupyter-islide`, one
 view, no build deps beyond `@jupyter-widgets/base`). This is the standard
-ipywidgets route and works identically in classic notebooks and JupyterLab
-(the M0 HTML viewer `HtmlSlideViewer` is kept as the no-extension fallback —
-see §10).
+ipywidgets route and works identically in classic notebooks and JupyterLab.
+M0's HTML tile-composite spike viewer was removed in M6 (polish) — the
+canvas view is the only one.
 
 ### 6.1 DOM layout (implemented in `view.js`)
 
@@ -834,7 +834,7 @@ duck-types the openslide OO API surface (`properties`, `dimensions`,
 `level_count`, `level_downsamples`, `level_dimensions`, `read_region`,
 `get_thumbnail`, `close`) — the seam for custom slide libraries that mirror
 openslide's API over other slide types (no `openslide` import needed; the
-backend closes the wrapped object). Both viewers expose it as a keyword-only
+backend closes the wrapped object). The viewer exposes it as a keyword-only
 `slide=` constructor argument, mutually exclusive with the path.
 
 ## 8. Verified OpenSlide / openslide-python API notes
@@ -900,6 +900,12 @@ fetch pass.
 | M4 ✅ | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
 | M5 | **Smooth zoom.** Two OSD feel-ideas, ported into the push architecture (§6.6): (a) *level cross-fade* — `tile_geo` accumulates view-side (evicted in lockstep with the 400-image LRU); when the §4 selected level changes the compositor draws the new level at alpha 1 and fades the old one out over 300 ms, coarsest-first (pure `blend.js`, no wire change, no extra bytes — the kernel still pushes one plan-level per viewport; a transient rAF loop runs only while the fade is live, idle CPU stays 0). (b) *center-first fetch* — the read plan is split into grid-anchored 4×4-tile (1024 px) blocks sorted by distance to the viewport center (the OSD tile-priority-queue idea as a pre-sorted list — no heap; the §5 cache-key invariant and the viewport-invariance regression test are untouched), and `_render_once` pushes in two stages (center chunk, then the full set) so the viewport center appears first; single-block plans (the zoomed-out case) push once, byte-for-byte as today. No new traits; module version 2.0.0; `HtmlSlideViewer` untouched. Out: animated pan/zoom (springs, dropped from this plan), WebGL, prefetch, per-tile fades, parallel fetch, touch pinch (§6.6.3). | `examples/m5_demo.ipynb`: wheel-zoom/pan walkthrough (cross-fade), M3 draw + M4 select during/after a fade; `tests/test_plan.py` (chunking, center-first order, single-chunk regression), `test_widget_m5.py` (two-stage push; final trait == full set), `frontend/test/blend.test.js`, compositor multi-level alpha |
 | M6 | **Polish & ship.** Docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
+
+M6 cleanup (done): removed the M0 spike viewer `HtmlSlideViewer` (the HTML
+tile-composite class in `widget.py`) and `examples/m0_demo.ipynb` — the M1
+canvas view is the sole view, so the "no-extension fallback" no longer
+exists. Milestone rows M0–M5 above are historical record and keep their
+references. |
 
 ## 11. Testing
 
@@ -1012,7 +1018,7 @@ fetch pass.
   the same guard), so the comm contract can't drift.
 - **JS tests (no browser, `frontend/test/`, `node --test`):** the pure
   math (`tilemath.js`) — round-trips, cursor-fixed zoom, pan, tile screen
-  rects (checked against the M0 screen-box formula), visible-tile selection,
+  rects (checked against the reference screen-box formula), visible-tile selection,
   zoom clamping — and the compositor (`compositor.js`) against a mock 2D
   context (white underlay, per-tile `drawImage` rects, skip-not-ready, and
   re-projection under a changed local transform). The DOM/event wiring in
@@ -1027,9 +1033,9 @@ islide/
 │                             #   deps: openslide-python>=1.4,
 │                             #   pillow>=9, ipywidgets>=8
 ├── islide/
-│   ├── __init__.py           # SlideViewer, HtmlSlideViewer, Viewport, …
+│   ├── __init__.py           # SlideViewer, Viewport, …
 │   │                         # + _jupyter_labextension_paths()
-│   ├── widget.py             # M1 DOMWidget + M0 HTML viewer + state machine
+│   ├── widget.py             # M1 DOMWidget + state machine
 │   ├── backend.py            # SlideBackend protocol, OpenSlideBackend
 │   ├── plan.py               # viewport -> read plan (pure)
 │   ├── annotations.py        # GeoJSON -> normalized annotation document (pure)

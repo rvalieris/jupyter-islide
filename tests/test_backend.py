@@ -1,9 +1,9 @@
 """Backend + constructor tests for the ``slide=`` constructor argument.
 
 Covers ``OpenSlideBackend.from_object`` (wrapping an already-opened,
-duck-typed openslide-API object) and the ``SlideViewer(slide=...)`` /
-``HtmlSlideViewer(slide=...)`` constructors — the seam for custom slide
-libraries that mirror openslide's OO API over different slide types.
+duck-typed openslide-API object) and the ``SlideViewer(slide=...)``
+constructor — the seam for custom slide libraries that mirror openslide's
+OO API over different slide types.
 
 Runs without openslide installed: the fake slide below stands in for the
 custom library's object.
@@ -14,7 +14,7 @@ from PIL import Image
 
 import pytest
 
-from islide import HtmlSlideViewer, OpenSlideBackend, SlideViewer, SlideMeta
+from islide import OpenSlideBackend, SlideViewer, SlideMeta
 
 
 class FakeSlide:
@@ -121,29 +121,11 @@ def test_slide_viewer_with_fake_slide():
     assert fake.closed
 
 
-def test_html_slide_viewer_with_fake_slide():
-    fake = _fake_slide()
-    v = HtmlSlideViewer(slide=fake)
-    try:
-        assert v.meta.dimensions == (512, 256)
-        plan = v.render()
-        assert len(plan.tiles) > 0
-        assert v.html.value.count("<img") == len(plan.tiles)
-        assert "<img" in v.html.value
-    finally:
-        v.close()
-    assert fake.closed
-
-
 def test_slide_viewer_with_none_raises():
     with pytest.raises(ValueError, match="provide a slide path"):
         SlideViewer()
-    with pytest.raises(ValueError, match="provide a slide path"):
-        HtmlSlideViewer()
 
 
 def test_slide_viewer_rejects_path_and_slide_together():
     with pytest.raises(ValueError, match="not both"):
         SlideViewer("some/path.svs", slide=_fake_slide())
-    with pytest.raises(ValueError, match="not both"):
-        HtmlSlideViewer("some/path.svs", slide=_fake_slide())

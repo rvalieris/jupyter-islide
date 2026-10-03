@@ -6,7 +6,7 @@ from .backend import OpenSlideBackend, SlideBackend
 from .cache import TileCache
 from .plan import ReadPlan, Tile, plan_viewport, select_level
 from .viewport import SlideMeta, Viewport, fit_zoom
-from .widget import HtmlSlideViewer, SlideViewer
+from .widget import SlideViewer
 
 
 def _jupyter_labextension_paths():
@@ -29,7 +29,6 @@ __all__ = [
     "parse_annotations",
     "normalize_ring",
     "apply_edit",
-    "HtmlSlideViewer",
     "SlideMeta",
     "Viewport",
     "fit_zoom",

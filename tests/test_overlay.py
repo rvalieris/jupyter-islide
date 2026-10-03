@@ -1,26 +1,23 @@
 """Overlay (full-slide heatmap) tests — headless (no JS view).
 
-Covers both viewers' ``set_overlay`` / ``clear_overlay`` API: a full-slide
-PNG (e.g. a model heatmap rendered at the slide's ``get_thumbnail``
-scale) is validated (aspect ratio must match the slide's), transported as
-a PNG data URL (alpha preserved — unlike the tile JPEGs), and drawn over
-the tiles with ``overlay_alpha`` opacity. On ``SlideViewer`` the overlay
-is the synced ``overlay_img``/``overlay_alpha`` trait pair; on
-``HtmlSlideViewer`` it is an absolutely positioned ``<img>`` in the HTML
-composite.
+Covers ``SlideViewer``'s ``set_overlay`` / ``clear_overlay`` API: a
+full-slide PNG (e.g. a model heatmap rendered at the slide's
+``get_thumbnail`` scale) is validated (aspect ratio must match the
+slide's), transported as a PNG data URL (alpha preserved — unlike the
+tile JPEGs), and drawn over the tiles with ``overlay_alpha`` opacity via
+the synced ``overlay_img``/``overlay_alpha`` trait pair.
 """
 from __future__ import annotations
 
 import base64
 import io
 import os
-import re
 
 import pytest
 from PIL import Image
 from traitlets import TraitError
 
-from islide import HtmlSlideViewer, SlideViewer
+from islide import SlideViewer
 from islide.encode import png_data_url
 
 SLIDE = os.path.normpath(
@@ -74,13 +71,6 @@ def _decode_png(url: str) -> Image.Image:
 def viewer():
     v = SlideViewer(str(SLIDE))
     v.wait()
-    yield v
-    v.close()
-
-
-@pytest.fixture()
-def html_viewer():
-    v = HtmlSlideViewer(str(SLIDE))
     yield v
     v.close()
 
@@ -211,50 +201,3 @@ def test_set_overlay_bad_transparent_raises(viewer):
         with pytest.raises((TypeError, ValueError)):
             viewer.set_overlay(img, transparent=bad)  # type: ignore[arg-type]
     assert viewer.overlay_img == ""  # rejected: state untouched
-
-
-# -------------------------------------------------------- HtmlSlideViewer
-def _overlay_img_tag(html: str) -> str | None:
-    m = re.search(
-        r'<img src="data:image/png[^"]*" style="position:absolute;'
-        r'[^"]*opacity:[0-9.]+',
-        html,
-    )
-    return m.group(0) if m else None
-
-
-def test_html_set_overlay_renders_full_slide_img(html_viewer):
-    img = _thumb_like()
-    html_viewer.set_overlay(img, alpha=0.3)
-    tag = _overlay_img_tag(html_viewer.html.value)
-    assert tag is not None
-    assert "opacity:0.3" in tag
-    # stretched over the slide's screen rect at the fit zoom
-    w, h = _slide_dims()
-    zoom = html_viewer.viewport.zoom
-    assert f"width:{w * zoom:.2f}px" in tag
-    assert f"height:{h * zoom:.2f}px" in tag
-
-
-def test_html_clear_overlay_removes_img(html_viewer):
-    html_viewer.set_overlay(_thumb_like())
-    assert _overlay_img_tag(html_viewer.html.value) is not None
-    html_viewer.clear_overlay()
-    assert _overlay_img_tag(html_viewer.html.value) is None
-
-
-def test_html_set_overlay_transparency_key(html_viewer):
-    w, h = _slide_dims()
-    th = max(1, round(64 * h / w))
-    img = Image.new("RGBA", (64, th), (0, 0, 0, 255))
-    html_viewer.set_overlay(img)  # default: pure black -> transparent
-    url = html_viewer._overlay_url
-    assert _decode_png(url).getpixel((0, 0)) == (0, 0, 0, 0)
-
-
-def test_html_overlay_aspect_mismatch_raises(html_viewer):
-    w, h = _slide_dims()
-    mismatch = Image.new("RGBA", (256, max(1, round(256 * 2 * h / w))), (0, 255, 0, 255))
-    with pytest.raises(ValueError, match="aspect ratio"):
-        html_viewer.set_overlay(mismatch)
-    assert html_viewer._overlay_url == ""

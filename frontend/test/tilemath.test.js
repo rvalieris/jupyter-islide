@@ -73,8 +73,8 @@ test('tileScreenRect: level-space crop -> screen rect (integer ds)', () => {
   assert.ok(Math.abs(r.h - 512) < 1e-12);
 });
 
-test('tileScreenRect matches the M0 screen-box math', () => {
-  // M0: left = (c0x*ds - x0)*z where x0 = cx - canvasW/(2z)
+test('tileScreenRect matches the screen-box reference math', () => {
+  // Reference: left = (c0x*ds - x0)*z where x0 = cx - canvasW/(2z)
   const t = math.makeTransform(18691, 36611, 0.5, 960, 540);
   const [level, ox, oy, cw, ch] = [2, 12288, 16384, 256, 256];
   const ds = 4;

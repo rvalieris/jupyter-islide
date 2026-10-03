@@ -1,6 +1,5 @@
 """Integration tests against the real test slide (needs openslide + data/testslide.tiff)."""
 import os
-import re
 
 import pytest
 
@@ -25,7 +24,6 @@ from islide.encode import jpeg_data_url
 from islide.fetch import fetch_tiles
 from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import Viewport
-from islide.widget import HtmlSlideViewer, _SEAM_MARGIN_PX
 
 from util import screen_covered
 
@@ -102,59 +100,6 @@ def test_corner_viewport(backend):
     # and sy in [270, 540))
     assert screen_covered(plan, 700, 500)
     assert not screen_covered(plan, 100, 100)
-
-
-def test_m0_html_adjacent_tiles_overlap(backend):
-    """M0 <img> boxes carry the same seam-margin inflation as the canvas
-    compositor (frontend/compositor.js): every screen-adjacent pair of
-    tiles must overlap by ~1 px, so the browser's independent per-element
-    rounding of fractional CSS boxes cannot open a white hairline."""
-    v = HtmlSlideViewer(SLIDE, canvas_w=960, canvas_h=540)
-    try:
-        html = v.html.value
-    finally:
-        v.close()
-    parsed = [
-        (float(l), float(t), float(w), float(h))
-        for l, t, w, h in re.findall(
-            r"left:([\d.-]+)px;top:([\d.-]+)px;width:([\d.-]+)px;height:([\d.-]+)px",
-            html,
-        )
-    ]
-    assert len(parsed) >= 4  # grid of tiles, so neighbours exist
-    m = _SEAM_MARGIN_PX
-    # style strings are rounded to 2 dp: allow 0.02 px when comparing edges
-    for i in range(len(parsed)):
-        for j in range(i + 1, len(parsed)):
-            l1, t1, w1, h1 = parsed[i]
-            l2, t2, w2, h2 = parsed[j]
-            # un-inflated (exact) screen boxes
-            u1 = (l1 + m, t1 + m, l1 + w1 - m, t1 + h1 - m)
-            u2 = (l2 + m, t2 + m, l2 + w2 - m, t2 + h2 - m)
-            y_overlap = min(u1[3], u2[3]) - max(u1[1], u2[1])
-            x_overlap = min(u1[2], u2[2]) - max(u1[0], u2[0])
-            if abs(u1[2] - u2[0]) < 0.05 and y_overlap > 1:  # i west of j
-                assert (l1 + w1) - l2 > 0.5
-            elif abs(u2[2] - u1[0]) < 0.05 and y_overlap > 1:  # j west of i
-                assert (l2 + w2) - l1 > 0.5
-            if abs(u1[3] - u2[1]) < 0.05 and x_overlap > 1:  # i north of j
-                assert (t1 + h1) - t2 > 0.5
-            elif abs(u2[3] - u1[1]) < 0.05 and x_overlap > 1:  # j north of i
-                assert (t2 + h2) - t1 > 0.5
-
-
-def test_m0_canvas_h_renders_new_height(backend):
-    """M0: the canvas_h property re-renders the HTML composite at the
-    new viewport height."""
-    v = HtmlSlideViewer(SLIDE, canvas_w=960, canvas_h=540)
-    try:
-        assert v.canvas_h == 540
-        v.canvas_h = 800
-        assert v.canvas_h == 800
-        assert v.viewport.canvas_h == 800
-        assert "height:800px" in v.html.value
-    finally:
-        v.close()
 
 
 def test_tile_cache_is_viewport_invariant(backend):
