@@ -6,7 +6,6 @@ close(), and the cross-language trait contract with frontend/defaults.js.
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 from pathlib import Path
@@ -17,9 +16,9 @@ import pytest
 from islide import SlideViewer, SlideMeta
 from islide.plan import plan_viewport
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
+from util import SLIDE_PATH
+
+SLIDE = str(SLIDE_PATH)
 
 try:
     import openslide  # noqa: F401
@@ -29,7 +28,6 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,8 +44,8 @@ IDENTITY_TRAITS = {
 
 
 @pytest.fixture()
-def viewer():
-    v = SlideViewer(str(SLIDE))
+def viewer(slide_path):
+    v = SlideViewer(slide_path)
     yield v
     v.close()
 
@@ -94,18 +92,18 @@ def test_background_open_and_wait(viewer):
     assert "level" in viewer.status and "tiles" in viewer.status
 
 
-def test_slide_kwarg_accepts_opened_openslide_object():
+def test_slide_kwarg_accepts_opened_openslide_object(slide_path):
     """A pre-opened openslide object (e.g. from a same-API custom lib)
     can be passed instead of a path; the viewer closes it on close()."""
     import openslide
 
-    os_slide = openslide.open_slide(SLIDE)
+    os_slide = openslide.open_slide(slide_path)
     v = SlideViewer(slide=os_slide)
     try:
         v.wait()
         assert v.slide_open
-        assert v.path == SLIDE  # best-effort path lifted from the object
-        assert v.meta["dimensions"] == [37382, 73222]
+        assert v.path == slide_path  # best-effort path lifted from the object
+        assert v.meta["dimensions"] == [46000, 32914]
         assert len(v.render().tiles) > 0
     finally:
         v.close()
@@ -122,11 +120,11 @@ def test_meta_trait_shape(viewer):
         "dimensions", "level_count", "level_downsamples",
         "level_dimensions", "mpp", "vendor",
     }
-    assert meta["dimensions"] == [37382, 73222]
-    assert meta["level_count"] == 8
+    assert meta["dimensions"] == [46000, 32914]
+    assert meta["level_count"] == 9
     assert meta["level_downsamples"][0] == 1.0
-    assert len(meta["level_dimensions"]) == 8
-    assert meta["mpp"] == 0.25
+    assert len(meta["level_dimensions"]) == 9
+    assert meta["mpp"] == 1000
 
 
 def test_headless_default_viewport_is_fit(viewer):
@@ -134,20 +132,20 @@ def test_headless_default_viewport_is_fit(viewer):
     vp = viewer.viewport
     assert vp is not None
     assert set(vp) == {"cx", "cy", "zoom", "canvas_w", "canvas_h"}
-    assert vp["cx"] == 37382 / 2 and vp["cy"] == 73222 / 2
+    assert vp["cx"] == 46000 / 2 and vp["cy"] == 32914 / 2
     assert vp["canvas_w"] == 960 and vp["canvas_h"] == 540
-    expected_fit = min(960 / 37382, 540 / 73222)
+    expected_fit = min(960 / 46000, 540 / 32914)
     assert vp["zoom"] == pytest.approx(expected_fit)
 
 
-def test_constructor_canvas_h_sets_trait_and_fit_viewport():
-    v = SlideViewer(str(SLIDE), canvas_h=800)
+def test_constructor_canvas_h_sets_trait_and_fit_viewport(slide_path):
+    v = SlideViewer(slide_path, canvas_h=800)
     try:
         v.wait()
         assert v.canvas_h == 800
         vp = v.viewport
         assert vp["canvas_w"] == 960 and vp["canvas_h"] == 800
-        assert vp["zoom"] == pytest.approx(min(960 / 37382, 800 / 73222))
+        assert vp["zoom"] == pytest.approx(min(960 / 46000, 800 / 32914))
     finally:
         v.close()
 
@@ -217,12 +215,12 @@ def test_revisit_after_pan_serves_identical_tiles(viewer):
     panned viewport must produce byte-identical tile payloads."""
     viewer.wait()
     first = dict(viewer.tiles)
-    viewer.center_on(18691, 36611)
+    viewer.center_on(23000, 16457)
     viewer.set_zoom(2.0)
     mid = dict(viewer.tiles)
-    viewer.center_on(20000, 40000)
+    viewer.center_on(20000, 20000)
     viewer.set_zoom(4.0)
-    viewer.center_on(18691, 36611)
+    viewer.center_on(23000, 16457)
     viewer.set_zoom(2.0)
     again = dict(viewer.tiles)
     # 1:1-ish center revisit of the same viewport -> identical payload
@@ -237,14 +235,14 @@ def test_set_zoom_and_center_on(viewer):
     vp = viewer.set_zoom(2.0)
     assert vp.zoom == pytest.approx(2.0)
     assert viewer.viewport["zoom"] == pytest.approx(2.0)
-    vp = viewer.center_on(18691, 36611)
-    assert vp.cx == pytest.approx(18691)
-    assert vp.cy == pytest.approx(36611)
+    vp = viewer.center_on(23000, 16457)
+    assert vp.cx == pytest.approx(23000)
+    assert vp.cy == pytest.approx(16457)
 
 
 def test_zoom_clamps(viewer):
     viewer.wait()
-    fit = min(960 / 37382, 540 / 73222)
+    fit = min(960 / 46000, 540 / 32914)
     assert viewer.set_zoom(1e9).zoom == pytest.approx(16.0)
     assert viewer.set_zoom(1e-9).zoom == pytest.approx(fit / 4.0)
 
@@ -252,9 +250,9 @@ def test_zoom_clamps(viewer):
 def test_viewport_bbox_and_read_crop(viewer):
     viewer.wait()
     viewer.set_zoom(1.0)
-    viewer.center_on(18691, 36611)
+    viewer.center_on(23000, 16457)
     x0, y0, x1, y1 = viewer.viewport_bbox()
-    assert (x0, y0, x1, y1) == (18211, 36341, 19171, 36881)
+    assert (x0, y0, x1, y1) == (22520, 16187, 23480, 16727)
     img = viewer.read_crop((x0, y0, x1, y1))
     assert img.size == (x1 - x0, y1 - y0)
     assert img.mode == "RGBA"
@@ -272,7 +270,7 @@ def test_js_originated_viewport_triggers_background_render(viewer):
     before = viewer.status
     # Simulate the JS view: set the trait directly (what a comm update does).
     viewer.viewport = {
-        "cx": 18691, "cy": 36611, "zoom": 2.0, "canvas_w": 960, "canvas_h": 540
+        "cx": 23000, "cy": 16457, "zoom": 2.0, "canvas_w": 960, "canvas_h": 540
     }
     deadline = time.monotonic() + 10
     while viewer.status == before and time.monotonic() < deadline:

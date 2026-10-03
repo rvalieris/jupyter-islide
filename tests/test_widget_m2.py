@@ -9,16 +9,15 @@ open, converts via the slide's mpp).
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 from traitlets import TraitError
 
 from islide import SlideViewer
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
+from util import SLIDE_PATH
+
+SLIDE = str(SLIDE_PATH)
 
 try:
     import openslide  # noqa: F401
@@ -28,7 +27,6 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
 ]
 
 EMPTY = {"type": "FeatureCollection", "features": []}
@@ -51,8 +49,8 @@ DOC = {
 
 
 @pytest.fixture()
-def viewer():
-    v = SlideViewer(str(SLIDE))
+def viewer(slide_path):
+    v = SlideViewer(slide_path)
     v.wait()
     yield v
     v.close()
@@ -128,28 +126,29 @@ def test_trait_assignment_is_coerced_through_the_normalizer(viewer):
 
 
 def test_set_annotations_um_uses_slide_mpp(viewer):
-    # testslide mpp is 0.25: (10 um, 20 um) -> (40 px, 80 px)
-    assert viewer._meta.mpp == pytest.approx(0.25)
-    doc = viewer.set_annotations({"type": "Point", "coordinates": [10, 20]}, units="um")
+    # the test slide's mpp is 1000 um/px: (1000 um, 2000 um) -> (1 px, 2 px)
+    assert viewer._meta.mpp == pytest.approx(1000)
+    doc = viewer.set_annotations(
+        {"type": "Point", "coordinates": [1000, 2000]}, units="um")
     assert viewer.annotations == doc
-    assert doc["features"][0]["geometry"]["coordinates"] == [40.0, 80.0]
+    assert doc["features"][0]["geometry"]["coordinates"] == [1.0, 2.0]
 
 
-def test_set_annotations_um_waits_for_open():
-    v = SlideViewer(str(SLIDE))
+def test_set_annotations_um_waits_for_open(slide_path):
+    v = SlideViewer(slide_path)
     try:
         assert not v.slide_open
-        v.set_annotations({"type": "Point", "coordinates": [10, 20]}, units="um")
+        v.set_annotations({"type": "Point", "coordinates": [1000, 2000]}, units="um")
         assert v.slide_open
         f = v.annotations["features"][0]
-        assert f["geometry"]["coordinates"] == [40.0, 80.0]
+        assert f["geometry"]["coordinates"] == [1.0, 2.0]
     finally:
         v.close()
 
 
-def test_set_annotations_px_does_not_wait_for_open():
+def test_set_annotations_px_does_not_wait_for_open(slide_path):
     # px mode never needs the slide: no wait, no mpp
-    v = SlideViewer(str(SLIDE))
+    v = SlideViewer(slide_path)
     try:
         doc = v.set_annotations({"type": "Point", "coordinates": [7, 8]})
         assert doc["features"][0]["geometry"]["coordinates"] == [7.0, 8.0]

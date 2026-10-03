@@ -10,7 +10,6 @@ degenerate drafts with a warning and no state change), ids after
 from __future__ import annotations
 
 import json
-import os
 import warnings
 
 import pytest
@@ -18,9 +17,9 @@ from traitlets import TraitError
 
 from islide import SlideViewer, normalize_ring
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
+from util import SLIDE_PATH
+
+SLIDE = str(SLIDE_PATH)
 
 try:
     import openslide  # noqa: F401
@@ -30,7 +29,6 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
 ]
 
 TRIANGLE = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]]
@@ -43,8 +41,8 @@ def _as_json(value):
 
 
 @pytest.fixture()
-def viewer():
-    v = SlideViewer(str(SLIDE))
+def viewer(slide_path):
+    v = SlideViewer(slide_path)
     v.wait()
     yield v
     v.close()
@@ -71,7 +69,7 @@ def test_last_polygon_appends_normalized_feature(viewer):
 
 
 def test_last_polygon_keeps_open_ring_unclamped(viewer):
-    ring = [[-50, -60], [4000, 0], [0, 9000]]  # partly off-slide
+    ring = [[-50, -60], [4000, 0], [0, 9000]]  # includes an off-slide corner
     viewer.last_polygon = ring
     f = viewer.annotations["features"][0]
     assert f["type"] == "Feature"
@@ -170,14 +168,14 @@ def test_jpeg_quality_defaults_to_85(viewer):
     assert viewer._jpeg_quality == 85
 
 
-def test_jpeg_quality_validation(viewer):
+def test_jpeg_quality_validation(viewer, slide_path):
     for bad in (0, 96, -1, 100, 1000, None, "high"):
         with pytest.raises(ValueError, match="jpeg_quality"):
-            SlideViewer(str(SLIDE), jpeg_quality=bad)
+            SlideViewer(slide_path, jpeg_quality=bad)
 
 
-def test_jpeg_quality_changes_tile_payload_only(viewer):
-    low = SlideViewer(str(SLIDE), jpeg_quality=40)
+def test_jpeg_quality_changes_tile_payload_only(viewer, slide_path):
+    low = SlideViewer(slide_path, jpeg_quality=40)
     try:
         low.wait()
         plan_def = viewer._render_once()

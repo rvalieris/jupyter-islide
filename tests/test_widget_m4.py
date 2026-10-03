@@ -15,7 +15,6 @@ commands through the trait.
 from __future__ import annotations
 
 import json
-import os
 import warnings
 
 import pytest
@@ -23,9 +22,9 @@ from traitlets import TraitError
 
 from islide import SlideViewer
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
+from util import SLIDE_PATH
+
+SLIDE = str(SLIDE_PATH)
 
 try:
     import openslide  # noqa: F401
@@ -35,7 +34,6 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
 ]
 
 EMPTY = {"type": "FeatureCollection", "features": []}
@@ -62,8 +60,8 @@ def _seed(viewer):
 
 
 @pytest.fixture()
-def viewer():
-    v = SlideViewer(str(SLIDE))
+def viewer(slide_path):
+    v = SlideViewer(slide_path)
     v.wait()
     yield v
     v.close()

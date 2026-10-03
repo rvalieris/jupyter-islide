@@ -190,7 +190,7 @@ canvas view is the only one.
     </div>
   </div>
   <div.islide-toolbar>
-    [fit] [1:1]  zoom readout "0.25× · 0.5 µm/px"  cursor "18691, 36611"  status
+    [fit] [1:1]  zoom readout "2× · 500 µm/px"  cursor "23000, 16457"  status
   </div>
 </div>
 ```
@@ -913,11 +913,16 @@ references. |
   math, coordinate transforms, LRU cache, trait/callback logic — pure
   functions over a `FakeSlide` (metadata-only stub of `SlideBackend`).
 - **Integration (needs libopenslide):** real open/read against a real slide,
-  `data/testslide.tiff` (whole-slide tiled TIFF, 37 382 × 73 222 px, 8
-  levels, 0.25 µm/px, opens via the generic-TIFF vendor — this resolved the
+  `data/CMU-1.tiff` (whole-slide generic-TIFF, 46 000 × 32 914 px, 9 levels,
+  1.0 mm/px, opens via the generic-TIFF vendor — this resolved the
   design-phase question about synthetic pyramids; level-selection math is
   additionally unit-tested against a fixed `SlideMeta` fixture in
-  `tests/test_plan.py`).
+  `tests/test_plan.py`). The slide is not committed: the session-scoped
+  `slide_path` fixture in `tests/conftest.py` downloads it at test time from
+  openslide-testdata
+  (`https://openslide.cs.cmu.edu/download/openslide-testdata/Generic-TIFF/CMU-1.tiff`)
+  if `data/CMU-1.tiff` is missing, and dependent tests skip if the file is
+  absent and the download fails.
   - Historical note: a single-level tiled TIFF written by `tifffile`
     (`tile=(256, 256)`) opens fine, and a hand-written multi-page "pyramid"
     TIFF was detected as 1 level (the generic-TIFF multi-resolution rules

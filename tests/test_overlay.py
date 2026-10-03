@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import base64
 import io
-import os
 
 import pytest
 from PIL import Image
@@ -20,9 +19,9 @@ from traitlets import TraitError
 from islide import SlideViewer
 from islide.encode import png_data_url
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
+from util import SLIDE_PATH
+
+SLIDE = str(SLIDE_PATH)
 
 try:
     import openslide  # noqa: F401
@@ -32,12 +31,11 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
 ]
 
 
 def _slide_dims() -> tuple[int, int]:
-    """data/testslide.tiff's level-0 dimensions (read once, cached)."""
+    """The test slide's level-0 dimensions (read once, cached)."""
     if not hasattr(_slide_dims, "dims"):
         import openslide
 
@@ -68,8 +66,8 @@ def _decode_png(url: str) -> Image.Image:
 
 
 @pytest.fixture()
-def viewer():
-    v = SlideViewer(str(SLIDE))
+def viewer(slide_path):
+    v = SlideViewer(slide_path)
     v.wait()
     yield v
     v.close()
@@ -155,7 +153,7 @@ def test_clear_overlay(viewer):
 
 # ------------------------------------------------- transparency key
 @pytest.fixture()
-def _duotone() -> Image.Image:
+def _duotone(slide_path) -> Image.Image:
     """An overlay-scale image with pure-black and red pixels (both
     half-opaque, so a pre-existing alpha channel is distinguishable)."""
     w, h = _slide_dims()

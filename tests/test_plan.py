@@ -40,7 +40,7 @@ class TestSelectLevel:
 
 class TestAnchor:
     @pytest.mark.parametrize(
-        "ds", [1.0, 2.0000808194891597, 16.01229444470048, 128.68154869933454]
+        "ds", [1.0, 4.000121536217793, 32.01432201760585, 257.06193261173183]
     )
     @pytest.mark.parametrize("p", [0, 1, 7, 99, 100, 256, 9999])
     def test_roundtrip(self, ds, p):
@@ -49,7 +49,7 @@ class TestAnchor:
         assert math.floor(anchor_l0(p, ds) / ds) == p
 
     @pytest.mark.parametrize(
-        "ds", [1.0, 2.0000808194891597, 16.01229444470048]
+        "ds", [1.0, 4.000121536217793, 32.01432201760585]
     )
     @pytest.mark.parametrize("p", [1, 100, 9999])
     def test_minimal(self, ds, p):

@@ -1,6 +1,5 @@
-"""Integration tests against the real test slide (needs openslide + data/testslide.tiff)."""
-import os
-
+"""Integration tests against the real test slide (needs openslide +
+data/CMU-1.tiff, downloaded at test time when missing -- see conftest.py)."""
 import pytest
 
 try:
@@ -9,15 +8,6 @@ try:
 except ImportError:
     HAS_OPENSLLIDE = False
 
-SLIDE = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "testslide.tiff")
-)
-
-pytestmark = [
-    pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
-    pytest.mark.skipif(not os.path.exists(SLIDE), reason="data/testslide.tiff missing"),
-]
-
 from islide.backend import OpenSlideBackend
 from islide.cache import TileCache
 from islide.encode import jpeg_data_url
@@ -25,7 +15,13 @@ from islide.fetch import fetch_tiles
 from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import Viewport
 
-from util import screen_covered
+from util import SLIDE_PATH, screen_covered
+
+SLIDE = str(SLIDE_PATH)
+
+pytestmark = [
+    pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
+]
 
 
 class CountingBackend:
@@ -39,25 +35,26 @@ class CountingBackend:
 
 
 @pytest.fixture(scope="module")
-def backend():
-    b = OpenSlideBackend(SLIDE)
+def backend(slide_path):
+    b = OpenSlideBackend(slide_path)
     yield b
     b.close()
 
 
 def test_meta(backend):
     m = backend.meta
-    assert m.dimensions == (37382, 73222)
-    assert m.level_count == 8
+    assert m.dimensions == (46000, 32914)
+    assert m.level_count == 9
     assert m.level_downsamples[0] == 1.0
     assert m.level_downsamples == tuple(sorted(m.level_downsamples))
-    assert m.mpp == 0.25
+    assert m.mpp == 1000
 
 
 def test_render_roundtrip(backend):
     cache = TileCache()
     cb = CountingBackend(backend)
-    vp = Viewport(cx=37382 / 2, cy=73222 / 2, zoom=0.007, canvas_w=960, canvas_h=540)
+    W, H = backend.meta.dimensions
+    vp = Viewport(cx=W / 2, cy=H / 2, zoom=0.007, canvas_w=960, canvas_h=540)
     plan = plan_viewport(backend.meta, vp, 256)
     assert plan.tiles
     tiles = fetch_tiles(cb, cache, plan)
@@ -74,7 +71,8 @@ def test_render_roundtrip(backend):
 def test_cache_warm_second_fetch_no_reads(backend):
     cache = TileCache()
     cb = CountingBackend(backend)
-    vp = Viewport(cx=37382 / 2, cy=73222 / 2, zoom=1.0, canvas_w=960, canvas_h=540)
+    W, H = backend.meta.dimensions
+    vp = Viewport(cx=W / 2, cy=H / 2, zoom=1.0, canvas_w=960, canvas_h=540)
     plan = plan_viewport(backend.meta, vp, 256)
     assert plan.level == 0  # zoom 1.0 -> level 0
     fetch_tiles(cb, cache, plan)
