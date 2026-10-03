@@ -904,8 +904,11 @@ fetch pass.
 M6 cleanup (done): removed the M0 spike viewer `HtmlSlideViewer` (the HTML
 tile-composite class in `widget.py`) and `examples/m0_demo.ipynb` — the M1
 canvas view is the sole view, so the "no-extension fallback" no longer
-exists. Milestone rows M0–M5 above are historical record and keep their
-references. |
+exists. The per-milestone demo notebooks `m1_demo`–`m5_demo` were merged
+into two: `examples/viewer_demo.ipynb` (viewer: canvas, programmatic
+control, M5 rendering feel) and `examples/annotations_demo.ipynb`
+(annotations: import, drawing, editing). Milestone rows M0–M5 above are
+historical record and keep their references. |
 
 ## 11. Testing
 

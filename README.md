@@ -179,10 +179,10 @@ and the **minimap** jumps the view. Pan/zoom is applied instantly in the
 view (a local transform) and the new viewport is synced back to Python
 (debounced), which fetches any missing tiles.
 
-Run `examples/m5_demo.ipynb` (rendering feel: center-first chunks and the
-cross-fade), `examples/m4_demo.ipynb` (editing), `examples/m3_demo.ipynb`
-(drawing), `examples/m2_demo.ipynb` (annotations), or
-`examples/m1_demo.ipynb` (canvas) for a walkthrough.
+Run `examples/viewer_demo.ipynb` (canvas, programmatic control, and the
+rendering feel: center-first chunks + level cross-fade) or
+`examples/annotations_demo.ipynb` (GeoJSON import, polygon drawing,
+select/label/color/delete) for a walkthrough.
 
 ## Layout
 
