@@ -3,15 +3,21 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M4** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
-(mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline, with a
-GeoJSON **annotation document** overlay (points, lines, polygons —
-level-0 px or microns) that accepts **hand-drawn polygons** (the
-**annotate** button or **A**, left-click the vertices, **A** to save) and
-supports **editing existing shapes**: click to select, then **del** /
-**label** / **color** in the toolbar (or the same Python API). A
-pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is kept as the no-extension
-fallback and as the reference pipeline.
+Status: **M5** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
+(mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline. M5
+improves *feel*, not features: wide views are read as grid-anchored
+1024-px **chunks in center-first order** — the center chunk is pushed
+before the rest, so the most important tiles arrive first — and a change
+of the selected pyramid level **cross-fades** (the old level fades out
+over 300 ms while the new level draws at full opacity). No new traits,
+no wire-format change (`tiles` / `tile_geo` are exactly as before). The
+canvas view also carries a GeoJSON **annotation document** overlay
+(points, lines, polygons — level-0 px or microns) that accepts
+**hand-drawn polygons** (the **annotate** button or **A**, left-click the
+vertices, **A** to save) and supports **editing existing shapes**: click
+to select, then **del** / **label** / **color** in the toolbar (or the
+same Python API). A pure-ipywidgets HTML viewer (`HtmlSlideViewer`) is
+kept as the no-extension fallback and as the reference pipeline.
 
 ## Install
 
@@ -185,7 +191,8 @@ v = HtmlSlideViewer("data/testslide.tiff")
 display(v)
 ```
 
-Run `examples/m4_demo.ipynb` (editing), `examples/m3_demo.ipynb`
+Run `examples/m5_demo.ipynb` (rendering feel: center-first chunks and the
+cross-fade), `examples/m4_demo.ipynb` (editing), `examples/m3_demo.ipynb`
 (drawing), `examples/m2_demo.ipynb` (annotations), `examples/m1_demo.ipynb`
 (canvas), or `examples/m0_demo.ipynb` (HTML) for a walkthrough.
 
@@ -194,18 +201,20 @@ Run `examples/m4_demo.ipynb` (editing), `examples/m3_demo.ipynb`
 ```
 islide/
   viewport.py  SlideMeta + Viewport (pure)
-  plan.py      viewport -> one region read, sliced into tiles (pure)
+  plan.py      viewport -> read plan: one region read, sliced into tiles,
+               chunked into grid-anchored 1024-px blocks, center-first (M5)
   annotations.py  GeoJSON document -> canonical annotation document (pure)
                  + apply_edit (M4: the pure delete/set_label/set_color ops)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
-  fetch.py     plan -> tiles (cache lookups + one read, cropped)
+  fetch.py     plan -> tiles (cache lookups + one read per chunk, cropped)
   encode.py    tile -> JPEG data URL
   widget.py    SlideViewer (M1 custom widget) + HtmlSlideViewer (M0 fallback)
 
 frontend/      JS canvas view (JupyterLab extension; model + view + tests)
-  tilemath.js     pure viewport/tile math
-  compositor.js  pure canvas scene drawing
+  tilemath.js     pure viewport/tile math (+ selected-level mirror)
+  compositor.js  pure canvas scene drawing (per-level alpha, M5)
+  blend.js       level cross-fade math (M5)
   annotations.js pure annotation overlay drawing + hit testing (M2/M4)
   polydraw.js    polygon draw state machine + draft preview (M3)
   model.js       SlideModel
@@ -219,7 +228,7 @@ data/            test slide (whole-slide TIFF, 37382x73222, 8 levels)
 
 ## Tests
 
-Python (pipeline + M0–M4 widget, headless):
+Python (pipeline + M0–M5 widget, headless):
 
 ```bash
 pip install -e ".[dev]"

@@ -35,7 +35,7 @@ from .annotations import apply_edit, normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
 from .encode import jpeg_data_url, png_data_url
-from .fetch import fetch_tiles
+from .fetch import fetch_chunk, fetch_tiles
 from .plan import ReadPlan, plan_viewport
 from .viewport import SlideMeta, Viewport, fit_zoom
 
@@ -447,30 +447,46 @@ class SlideViewer(widgets.DOMWidget):
                 with self._render_lock:
                     dirty = self._render_dirty
                     self._render_dirty = False
-                if not dirty:
-                    return
+                    if not dirty:
+                        # Hand off *under the lock*: a superseding
+                        # viewport registered between the last render
+                        # and this check must not be lost — clearing the
+                        # flag outside the lock would let _schedule_render
+                        # see flag=True and start nothing, and this
+                        # thread's flag clear would then swallow the
+                        # dirty render.
+                        self._rendering_bg = False
+                        return
         finally:
             with self._render_lock:
                 self._rendering_bg = False
 
     # --------------------------------------------------------------- rendering
     def _render_once(self) -> ReadPlan | None:
-        """Plan + fetch + encode for the current viewport; push to the view."""
+        """Plan + fetch + encode for the current viewport; push to the view.
+
+        M5 (DESIGN.md §6.6): a multi-chunk plan pushes twice — the center
+        chunk first, then the full tile set — so the view can cross-fade
+        the incoming level in from the middle out; a single-chunk plan
+        pushes once (exactly the pre-M5 behavior). Both pushes carry
+        identical geometry for shared tiles (absolute level px from the
+        plan), so the view's accumulated tile state stays consistent.
+        """
         if self._closed or not self.slide_open or self._meta is None:
             return None
         vp = self._vp_current
         plan = plan_viewport(self._meta, vp, self.tile_size)
+        if len(plan.chunks) > 1:
+            # Center chunk first; its tiles are cached, so the full fetch
+            # below only reads the remaining chunks (center-first order).
+            center = plan.chunks[0]
+            self._push_tile_set(
+                plan,
+                {t.key for t in center.tiles},
+                fetch_chunk(self.backend, self.cache, center, plan),
+            )
         tiles = fetch_tiles(self.backend, self.cache, plan)  # type: ignore[arg-type]
-        geo: dict[str, list[int]] = {}
-        urls: dict[str, str] = {}
-        rx, ry = plan.read_origin
-        for t in plan.tiles:
-            k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
-            x0, y0, x1, y1 = t.crop
-            geo[k] = [t.key[0], rx + x0, ry + y0, x1 - x0, y1 - y0]
-            urls[k] = jpeg_data_url(tiles[t.key], self._jpeg_quality)
-        self.tiles = urls
-        self.tile_geo = geo
+        self._push_tile_set(plan, {t.key for t in plan.tiles}, tiles)
         # Pipeline info only: the live zoom + µm/px belong to the JS
         # readout (which tracks the local transform); repeating them here
         # would show the zoom twice — and this line lags the pointer by
@@ -480,6 +496,32 @@ class SlideViewer(widgets.DOMWidget):
             f"{len(plan.tiles)} tiles"
         )
         return plan
+
+    def _push_tile_set(
+        self,
+        plan: ReadPlan,
+        tile_keys: set[tuple[int, int, int]],
+        tiles: dict[tuple, Any],
+    ) -> None:
+        """Encode ``tiles`` (tile key -> PIL image) and push them as
+        ``tiles`` + ``tile_geo`` for ``tile_keys``.
+
+        Geometry is absolute level px (``plan.read_origin`` + the tile
+        crops), identical between a render's two pushes, so the view can
+        reproject each tile under its own local transform.
+        """
+        geo: dict[str, list[int]] = {}
+        urls: dict[str, str] = {}
+        rx, ry = plan.read_origin
+        for t in plan.tiles:
+            if t.key not in tile_keys:
+                continue
+            k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
+            x0, y0, x1, y1 = t.crop
+            geo[k] = [t.key[0], rx + x0, ry + y0, x1 - x0, y1 - y0]
+            urls[k] = jpeg_data_url(tiles[t.key], self._jpeg_quality)
+        self.tiles = urls
+        self.tile_geo = geo
 
     def render(self) -> ReadPlan:
         """Synchronous render of the current viewport (headless/programmatic)."""

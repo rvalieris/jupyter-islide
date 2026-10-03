@@ -113,3 +113,31 @@ test('viewport/transform wire form round-trip', () => {
   const t = math.viewportToTransform(vp);
   assert.deepEqual(math.transformToViewport(t), vp);
 });
+
+// ------------------------------------------------------------------ M5
+test('selectLevel mirrors Python select_level (smallest ds >= 1/zoom)', () => {
+  const ds = [1, 2, 4, 8];
+  assert.equal(math.selectLevel(ds, 8), 0);   // need 1/8
+  assert.equal(math.selectLevel(ds, 2), 0);   // need 1/2
+  assert.equal(math.selectLevel(ds, 0.5), 1); // need 2
+  assert.equal(math.selectLevel(ds, 0.25), 2); // need 4
+  assert.equal(math.selectLevel(ds, 0.125), 3); // need 8
+  // below the coarsest level: clamps to the last level
+  assert.equal(math.selectLevel(ds, 0.0625), 3);
+  assert.equal(math.selectLevel(ds, 0.001), 3);
+  // degenerate: zoom 0 (need = Infinity) -> coarsest
+  assert.equal(math.selectLevel(ds, 0), 3);
+});
+
+test('visibleTiles reports each tile level (M5 cross-fade input)', () => {
+  const t = math.makeTransform(256, 256, 1.0, 512, 512);
+  const geo = {
+    '0:0:0': [0, 0, 0, 256, 256],
+    '1:0:0': [1, 0, 0, 512, 512], // ds 2: covers l0 [0..1024]^2
+  };
+  const levels = new Map(
+    math.visibleTiles(t, geo, [1, 2]).map((v) => [v.key, v.level]),
+  );
+  assert.equal(levels.get('0:0:0'), 0);
+  assert.equal(levels.get('1:0:0'), 1);
+});

@@ -122,3 +122,111 @@ class TestPlan:
             x0, y0, x1, y1 = t.crop
             assert 0 <= x0 < x1 <= plan.size[0]
             assert 0 <= y0 < y1 <= plan.size[1]
+
+
+def make_big_meta() -> SlideMeta:
+    return SlideMeta(
+        dimensions=(4096, 4096),
+        level_count=4,
+        level_downsamples=(1.0, 2.0, 4.0, 8.0),
+        level_dimensions=((4096, 4096), (2048, 2048), (1024, 1024), (512, 512)),
+    )
+
+
+BIG = make_big_meta()
+
+
+class TestChunking:
+    """M5: the tile set is partitioned into 1024-px (4x4-tile) blocks,
+    each an independent read unit, ordered center-first (DESIGN.md §6.6)."""
+
+    def test_single_chunk_when_plan_fits_one_block(self):
+        # 4096-wide level, zoom 4 around one grid cell: one block
+        plan = plan_viewport(BIG, vp(1900, 2000, 4.0), tile_size=256)
+        assert plan.level == 0
+        assert len(plan.chunks) == 1
+        c = plan.chunks[0]
+        assert c.tiles == plan.tiles
+        assert c.read_origin == (1024, 1024)  # block (1,1) on the 1024 grid
+        assert c.size == (1024, 1024)
+        assert c.loc == (1024, 1024)  # ds == 1: the anchor is exact
+        # the chunk read rect contains the union read rect (one covering
+        # read per block; a single-block plan reads its whole block)
+        assert c.read_origin[0] <= plan.read_origin[0]
+        assert c.read_origin[1] <= plan.read_origin[1]
+        assert c.read_origin[0] + c.size[0] >= plan.read_origin[0] + plan.size[0]
+        assert c.read_origin[1] + c.size[1] >= plan.read_origin[1] + plan.size[1]
+
+    def test_chunks_partition_the_tile_set(self):
+        plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)
+        assert len(plan.chunks) == 4
+        # partition: every tile in exactly one chunk (block grouping, so
+        # chunk order is not tile order)
+        in_chunks = [t.key for c in plan.chunks for t in c.tiles]
+        assert sorted(in_chunks) == sorted(t.key for t in plan.tiles)
+        assert len(in_chunks) == len(plan.tiles)
+
+    def test_chunk_read_is_grid_anchored_block(self):
+        plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)
+        ds = plan.downsample
+        for c in plan.chunks:
+            # grid-anchored: block origins on the 1024-px grid (level 0)
+            assert c.read_origin[0] % 1024 == 0
+            assert c.read_origin[1] % 1024 == 0
+            assert c.size[0] <= 1024 and c.size[1] <= 1024
+            assert c.loc == (anchor_l0(c.read_origin[0], ds),
+                             anchor_l0(c.read_origin[1], ds))
+            # the chunk's screen rect is the union of its tiles' screen
+            # rects (left, top, width, height)
+            l = min(t.screen[0] for t in c.tiles)
+            tp = min(t.screen[1] for t in c.tiles)
+            r = max(t.screen[0] + t.screen[2] for t in c.tiles)
+            b = max(t.screen[1] + t.screen[3] for t in c.tiles)
+            assert c.screen == (l, tp, r - l, b - tp)
+
+    def test_tile_crops_land_inside_the_chunk_read(self):
+        """fetch_chunk crops tiles from the chunk read: every tile crop,
+        re-based onto the chunk origin, must fit the chunk rect."""
+        plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)
+        rx, ry = plan.read_origin
+        for c in plan.chunks:
+            cx, cy = c.read_origin
+            for t in c.tiles:
+                x0, y0, x1, y1 = t.crop
+                lx0, ly0 = rx + x0 - cx, ry + y0 - cy
+                lx1, ly1 = rx + x1 - cx, ry + y1 - cy
+                assert 0 <= lx0 < lx1 <= c.size[0]
+                assert 0 <= ly0 < ly1 <= c.size[1]
+
+    def test_center_first_ordering(self):
+        # view (1700..2100) x (1900..2100): blocks (1,1), (2,1), (1,2),
+        # (2,2); distances from (1900, 2000) to block centers differ, so
+        # the sort is fully determined
+        plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)
+        assert plan.level == 0
+        assert [c.read_origin for c in plan.chunks] == [
+            (1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048)
+        ]
+        vx, vy = 1900.0, 2000.0
+        dists = [
+            (c.read_origin[0] + c.size[0] / 2 - vx) ** 2
+            + (c.read_origin[1] + c.size[1] / 2 - vy) ** 2
+            for c in plan.chunks
+        ]
+        assert dists == sorted(dists)
+
+    def test_edge_block_clamped_to_level_bounds(self):
+        rect = SlideMeta(
+            dimensions=(5000, 3000),
+            level_count=3,
+            level_downsamples=(1.0, 2.0, 4.0),
+            level_dimensions=((5000, 3000), (2500, 1500), (1250, 750)),
+        )
+        plan = plan_viewport(rect, vp(4900, 2900, 1.0), tile_size=256)
+        assert plan.level == 0
+        assert len(plan.chunks) == 1
+        c = plan.chunks[0]
+        # block (4,2): origin (4096, 2048), clamped to the level corner
+        assert c.read_origin == (4096, 2048)
+        assert c.size == (904, 952)  # (5000-4096, 3000-2048)
+        assert c.tiles == plan.tiles

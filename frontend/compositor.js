@@ -19,6 +19,12 @@ import * as math from './tilemath.js';
  * @param {object} opts.meta        slide meta (for level_downsamples)
  * @param {object} opts.tileGeo     { "L:tx:ty": [level, ox, oy, cw, ch] }
  * @param {Map<string, object>} opts.images  key -> decoded image (HTMLImageElement)
+ * @param {Record<number, number>|null} opts.levelAlphas  M5 cross-fade: per-level
+ *   alpha. When given, levels are drawn coarsest-first at their supplied
+ *   alpha (levels without an entry, or at alpha 0, are skipped, so the
+ *   fading-out level disappears at the fade's end). When omitted (the
+ *   pre-M5 contract) every visible ready tile is drawn at full opacity in
+ *   `tileGeo` insertion order.
  * @returns {number} number of tiles drawn
  */
 /**
@@ -32,15 +38,15 @@ import * as math from './tilemath.js';
  */
 const SEAM_MARGIN = 0.5;
 
-export function drawScene(ctx, { transform, meta, tileGeo, images }) {
+export function drawScene(ctx, { transform, meta, tileGeo, images, levelAlphas = null }) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, transform.canvasW, transform.canvasH);
 
   const ds = meta.level_downsamples;
-  let n = 0;
-  for (const tile of math.visibleTiles(transform, tileGeo, ds)) {
+  const tiles = math.visibleTiles(transform, tileGeo, ds);
+  const drawTile = (tile) => {
     const img = images.get(tile.key);
-    if (!img || !img._ready) continue;
+    if (!img || !img._ready) return false;
     ctx.drawImage(
       img,
       tile.left - SEAM_MARGIN,
@@ -48,7 +54,25 @@ export function drawScene(ctx, { transform, meta, tileGeo, images }) {
       tile.w + 2 * SEAM_MARGIN,
       tile.h + 2 * SEAM_MARGIN,
     );
-    n += 1;
+    return true;
+  };
+
+  let n = 0;
+  if (levelAlphas === null) {
+    for (const tile of tiles) {
+      if (drawTile(tile)) n += 1;
+    }
+  } else {
+    for (let level = ds.length - 1; level >= 0; level -= 1) {
+      const alpha = levelAlphas[level];
+      if (!(alpha > 0)) continue; // absent / 0 / negative: skip level
+      ctx.globalAlpha = alpha;
+      for (const tile of tiles) {
+        if (tile.level !== level) continue;
+        if (drawTile(tile)) n += 1;
+      }
+      ctx.globalAlpha = 1;
+    }
   }
   return n;
 }

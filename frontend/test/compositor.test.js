@@ -12,7 +12,9 @@ function mockCtx() {
     set fillStyle(v) { this._fillStyle = v; },
     get fillStyle() { return this._fillStyle; },
     fillRect(x, y, w, h) { calls.fill += 1; this.lastFill = [x, y, w, h]; },
-    drawImage(img, left, top, w, h) { calls.draw.push([img, left, top, w, h]); },
+    drawImage(img, left, top, w, h) {
+      calls.draw.push([img, left, top, w, h, this.globalAlpha]);
+    },
   };
 }
 
@@ -178,4 +180,70 @@ test('drawOverlay reprojects under a local transform (smooth pan)', () => {
   assert.ok(Math.abs((l1 - l0) - (-600)) < 1e-9);
   assert.ok(Math.abs(w1 - w0) < 1e-9);
   assert.ok(Math.abs(w0 - META.dimensions[0] * 2.0) < 1e-9);
+});
+
+// ---------------------------------------------------------------- M5 cross-fade
+const FADE_GEO = {
+  '0:0:0': [0, 0, 0, 256, 256],
+  '0:1:0': [0, 256, 0, 256, 256],
+  '0:0:1': [0, 0, 256, 256, 256],
+  '0:1:1': [0, 256, 256, 256, 256],
+  // one big level-2 tile (ds 4) covering l0 [0..8192]^2
+  '2:0:0': [2, 0, 0, 2048, 2048],
+};
+
+function fadeImages() {
+  return new Map(Object.keys(FADE_GEO).map((k) => [k, { _ready: true, k }]));
+}
+
+test('levelAlphas: coarsest-first at the supplied alpha, absent levels skipped', () => {
+  const t = { cx: 256, cy: 256, zoom: 1.0, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  const n = drawScene(ctx, {
+    transform: t,
+    meta: META,
+    tileGeo: FADE_GEO,
+    images: fadeImages(),
+    levelAlphas: { 2: 1, 0: 0.5 }, // mid-fade: old level half out
+  });
+  assert.equal(n, 5);
+  const draws = ctx.calls.draw;
+  // coarsest first: the level-2 tile is drawn first, at alpha 1...
+  assert.equal(draws[0][0].k, '2:0:0');
+  assert.ok(Math.abs(draws[0][5] - 1) < 1e-9);
+  // ...then the four level-0 tiles at alpha 0.5
+  for (let i = 1; i < draws.length; i++) {
+    assert.ok(draws[i][0].k.startsWith('0:'));
+    assert.ok(Math.abs(draws[i][5] - 0.5) < 1e-9);
+  }
+  // globalAlpha is restored for subsequent passes (annotations, overlay)
+  assert.equal(ctx.globalAlpha, 1);
+});
+
+test('levelAlphas: a zero-alpha level is not drawn (fade finished)', () => {
+  const t = { cx: 256, cy: 256, zoom: 1.0, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  const n = drawScene(ctx, {
+    transform: t,
+    meta: META,
+    tileGeo: FADE_GEO,
+    images: fadeImages(),
+    levelAlphas: { 2: 1 }, // level 0 absent: the fade is over
+  });
+  assert.equal(n, 1);
+  assert.equal(ctx.calls.draw[0][0].k, '2:0:0');
+});
+
+test('levelAlphas: all-zero alphas draw nothing', () => {
+  const t = { cx: 256, cy: 256, zoom: 1.0, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  const n = drawScene(ctx, {
+    transform: t,
+    meta: META,
+    tileGeo: FADE_GEO,
+    images: fadeImages(),
+    levelAlphas: { 0: 0, 2: 0 },
+  });
+  assert.equal(n, 0);
+  assert.equal(ctx.calls.draw.length, 0);
 });

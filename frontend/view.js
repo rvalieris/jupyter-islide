@@ -14,6 +14,7 @@
  */
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
+import * as blend from './blend.js';
 import { drawScene, drawOverlay } from './compositor.js';
 import {
   CLICK_THRESHOLD_PX, MODE_DRAWING, MODE_IDLE, drawDraftPolygon,
@@ -32,6 +33,8 @@ export class SlideView extends DOMWidgetView {
     super.render();
     this._transform = null;
     this._images = new Map();
+    this._tileGeo = {}; // M5: accumulated tile geometry (see _onTileGeoChange)
+    this._blend = null; // M5: in-flight level cross-fade (blend.js state)
     this._overlayImg = null; // decoded full-slide overlay image (trait: overlay_img)
     this._lastSentViewport = null;
     this._syncTimer = null;
@@ -148,6 +151,9 @@ export class SlideView extends DOMWidgetView {
     // change the plan (a later push then merges), leaving the initial
     // viewport blank.
     this._mergeTiles();
+    // M5: seed the accumulated tile geometry the same way — no
+    // change:tile_geo event fires for the kernel's initial render either.
+    this._onTileGeoChange();
   }
 
   _onViewportChange() {
@@ -166,7 +172,30 @@ export class SlideView extends DOMWidgetView {
     this._requestDraw();
   }
 
+  /** M5: accumulate tile geometry across pushes — Python pushes the
+   * center chunk first and then the full set, and drawScene draws
+   * everything accumulated (not just the latest push, which would blank
+   * the canvas behind the incoming center chunk). Also records the level
+   * cross-fade: when the selected pyramid level (math.selectLevel on the
+   * local zoom, mirroring Python's select_level) changes between pushes,
+   * the old level fades out over blend.BLEND_MS while the new level draws
+   * at full opacity. The second push of a two-stage render re-enters with
+   * the same selected level, so the in-flight fade is kept, not reset.
+   */
   _onTileGeoChange() {
+    const geo = this.model.get('tile_geo') || {};
+    for (const key of Object.keys(geo)) {
+      this._tileGeo[key] = geo[key];
+    }
+    const meta = this.model.get('meta');
+    const t = this._transform;
+    if (meta && t) {
+      const sel = math.selectLevel(meta.level_downsamples, t.zoom);
+      if (this._blend === null || this._blend.to !== sel) {
+        const prev = this._blend ? this._blend.to : sel;
+        this._blend = blend.startTransition(prev, sel, Date.now());
+      }
+    }
     this._requestDraw();
   }
 
@@ -281,7 +310,9 @@ export class SlideView extends DOMWidgetView {
       this._images.set(key, img);
     }
     while (this._images.size > MAX_CACHED_IMAGES) {
-      this._images.delete(this._images.keys().next().value);
+      const key = this._images.keys().next().value;
+      this._images.delete(key);
+      delete this._tileGeo[key]; // M5: evict geometry in lockstep with images
     }
   }
 
@@ -736,11 +767,19 @@ export class SlideView extends DOMWidgetView {
     }
     const ctx = this._canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // M5: cross-fade the incoming level. `_blend` is the transition
+    // recorded at the last tile_geo push; levelAlphas() yields the
+    // per-level alpha (new level at 1, old level fading 1 -> 0). When no
+    // transition is in flight the alphas reduce to {selected: 1} and the
+    // rAF loop below stops — the fade never runs at rest.
+    const now = Date.now();
+    const levelAlphas = this._blend ? blend.levelAlphas(this._blend, now) : null;
     drawScene(ctx, {
       transform: this._transform,
       meta: this.model.get('meta'),
-      tileGeo: this.model.get('tile_geo'),
+      tileGeo: this._tileGeo,
       images: this._images,
+      levelAlphas,
     });
     // Overlay (heatmap): over the tiles, under the annotation canvas.
     const alpha = Number(this.model.get('overlay_alpha'));
@@ -754,6 +793,10 @@ export class SlideView extends DOMWidgetView {
     this._drawMinimapViewport();
     this._updateReadout();
     this._updateCursorReadout();
+    // M5: step the cross-fade on the next frame until it completes.
+    if (this._blend && !blend.done(this._blend, now)) {
+      this._requestDraw();
+    }
   }
 
   /** M2: overlay pass — read-only annotation shapes, reprojected each frame. */

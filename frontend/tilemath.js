@@ -108,7 +108,7 @@ export function visibleTiles(t, tileGeo, downsamples, margin = 0) {
       r.top < t.canvasH + margin &&
       r.top + r.h > -margin
     ) {
-      out.push({ key, ...r });
+      out.push({ key, level: geo[0], ...r });
     }
   }
   return out;
@@ -121,4 +121,23 @@ export function viewportL0Bbox(t) {
   const [x0, y0] = screenToL0(t, 0, 0);
   const [x1, y1] = screenToL0(t, t.canvasW, t.canvasH);
   return { x0, y0, x1, y1 };
+}
+
+/**
+ * Selected pyramid level for a zoom: the smallest level L with
+ * level_downsamples[L] >= 1 / zoom (the finest level whose own
+ * resolution still meets the on-screen resolution). Mirrors Python's
+ * `select_level` (islide.plan) — the view uses it to detect level
+ * changes between tile_geo pushes (M5 cross-fade, DESIGN.md §6.6).
+ */
+export function selectLevel(downsamples, zoom) {
+  const need = 1 / zoom;
+  let L = downsamples.length - 1;
+  for (let i = 0; i < downsamples.length; i += 1) {
+    if (downsamples[i] >= need) {
+      L = i;
+      break;
+    }
+  }
+  return L;
 }
