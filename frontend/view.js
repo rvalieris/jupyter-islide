@@ -1,5 +1,5 @@
 /**
- * islide canvas view (M1).
+ * islide canvas view.
  *
  * Owns: the DOM (canvas + minimap + toolbar), all mouse/keyboard input, the
  * local pan/zoom transform (smooth between round-trips), and the canvas
@@ -10,7 +10,7 @@
  *              -> debounced `viewport` trait (Python plans + fetches tiles)
  *   Python     -> `tiles` (data URLs) + `tile_geo` (level-space rects)
  *              -> decoded image cache -> canvas
- *   Python     -> `annotations` (canonical document; M3.5) -> overlay pass
+ *   Python     -> `annotations` (canonical document) -> overlay pass
  */
 import { DOMWidgetView } from '@jupyter-widgets/base';
 import * as math from './tilemath.js';
@@ -37,8 +37,8 @@ export class SlideView extends DOMWidgetView {
     super.render();
     this._transform = null;
     this._images = new Map();
-    this._tileGeo = {}; // M5: accumulated tile geometry (see _onTileGeoChange)
-    this._blend = null; // M5: in-flight level cross-fade (blend.js state)
+    this._tileGeo = {}; // accumulated tile geometry (see _onTileGeoChange)
+    this._blend = null; // in-flight level cross-fade (blend.js state)
     this._overlayImg = null; // decoded full-slide overlay image (trait: overlay_img)
     this._lastSentViewport = null;
     this._syncTimer = null;
@@ -46,13 +46,13 @@ export class SlideView extends DOMWidgetView {
     this._dragging = null;
     this._cursor = null; // canvas-relative pointer pos, drives the l0 readout
     this._annotAlpha = 1; // view-local overlay opacity (toolbar slider)
-    // M4 annotation editing (DESIGN.md §6.5): the selected feature id
+    // Annotation editing (docs/DESIGN.md §6.5): the selected feature id
     // (view-local, view state); `annotation_edit` is the JS->Py wire.
     this._selectedId = null;
-    // M3 polygon drawing (DESIGN.md §6.4): local drawing state (never
+    // Polygon drawing (docs/DESIGN.md §6.4): local drawing state (never
     // synced); `last_polygon` is the only JS->Py write.
     this._poly = polyDrawInit();
-    // M6 vertex editing (DESIGN.md §6.7): `_vertexDrag` is the grabbed
+    // Vertex editing (docs/annotations.md): `_vertexDrag` is the grabbed
     // vertex (null when no handle was pressed): {kind: 'draft' | 'feature',
     // id? (feature only), index}; `_vertexMove` is the live local preview
     // of a dragged saved-feature vertex; `_vertexInsert` is the pending
@@ -124,7 +124,7 @@ export class SlideView extends DOMWidgetView {
     this._readout = this.el.querySelector('.islide-readout');
     this._cursorEl = this.el.querySelector('.islide-cursor');
     this._status = this.el.querySelector('.islide-status');
-    // M4: the toolbar element and its buttons (annotate = the A-key draw
+    // The toolbar element and its buttons (annotate = the A-key draw
     // toggle; del/label/color act on the selected feature, disabled until
     // a selection exists).
     this._toolbarEl = this.el.querySelector('.islide-toolbar');
@@ -134,7 +134,7 @@ export class SlideView extends DOMWidgetView {
       label: this.el.querySelector('[data-action="label"]'),
       color: this.el.querySelector('[data-action="color"]'),
     };
-    // M3: keyboard-driven drawing — the root holds keyboard focus (a click
+    // Keyboard-driven drawing — the root holds keyboard focus (a click
     // on the canvas area focuses the nearest focusable ancestor, this
     // div); see the keydown binding in _bindEvents.
     this.el.tabIndex = 0;
@@ -169,7 +169,7 @@ export class SlideView extends DOMWidgetView {
     // change the plan (a later push then merges), leaving the initial
     // viewport blank.
     this._mergeTiles();
-    // M5: seed the accumulated tile geometry the same way — no
+    // Seed the accumulated tile geometry the same way — no
     // change:tile_geo event fires for the kernel's initial render either.
     this._onTileGeoChange();
   }
@@ -190,7 +190,7 @@ export class SlideView extends DOMWidgetView {
     this._requestDraw();
   }
 
-  /** M5: accumulate tile geometry across pushes — Python pushes the
+  /** Accumulate tile geometry across pushes — Python pushes the
    * center chunk first and then the full set, and drawScene draws
    * everything accumulated (not just the latest push, which would blank
    * the canvas behind the incoming center chunk). Also records the level
@@ -258,7 +258,7 @@ export class SlideView extends DOMWidgetView {
   }
 
   _onStatusChange() {
-    // M6: a refused vertex edit (`edit ignored: ...`) leaves the pushed
+    // A refused vertex edit (`edit ignored: ...`) leaves the pushed
     // document unchanged and pushes nothing — drop that edit's pending
     // preview so the drawn document and the handles agree again (the
     // accepted path is cleared by the `annotations` push instead).
@@ -292,23 +292,23 @@ export class SlideView extends DOMWidgetView {
     this._updateStatus();
   }
 
-  /** View-local status line (M3 drawing messages); overrides the trait. */
+  /** View-local status line (drawing messages); overrides the trait. */
   _setLocalStatus(text) {
     this._localStatus = text;
     this._updateStatus();
   }
 
-  /** Any annotations push re-validates the M4 selection: a selected id
+  /** Any annotations push re-validates the selection: a selected id
    * that is no longer in the set (clear_annotations(), a set_annotations()
    * replace, a delete round-trip) clears it; the del/label/color buttons
-   * track the selection either way. It also retires the M6 pending vertex
+   * track the selection either way. It also retires the pending vertex
    * previews: the pushed document (an accepted set_vertex / add_vertex, a
    * set_annotations() replace, ...) is what gets drawn from now on. (A
    * refused edit pushes nothing; its `edit ignored` status retires the
    * preview instead — see _onStatusChange.)
    */
   _onAnnotationsChange() {
-    // Retire the M6 pending vertex previews — unless a vertex drag is live
+    // Retire the pending vertex previews — unless a vertex drag is live
     // right now, where `_vertexMove` / `_vertexInsert` are that drag's
     // *live* previews and the arriving push is from an earlier commit
     // (keep the live ones; the round-trip that retires them is the one
@@ -374,7 +374,7 @@ export class SlideView extends DOMWidgetView {
     while (this._images.size > MAX_CACHED_IMAGES) {
       const key = this._images.keys().next().value;
       this._images.delete(key);
-      delete this._tileGeo[key]; // M5: evict geometry in lockstep with images
+      delete this._tileGeo[key]; // evict geometry in lockstep with images
     }
   }
 
@@ -442,10 +442,10 @@ export class SlideView extends DOMWidgetView {
     // JupyterLab versions and the browser's native menu.
     this._canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // M3 keyboard (DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
+    // Keyboard (docs/DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
     // it. While the alpha input has focus its keys are left alone.
     this.el.addEventListener('keydown', (e) => {
-      // Keys typed in a toolbar input (the alpha slider, the M4 label /
+      // Keys typed in a toolbar input (the alpha slider, the label /
       // color editors) are the input's own business.
       if (e.target && e.target.tagName === 'INPUT') return;
       if (e.key === 'a' || e.key === 'A') {
@@ -476,7 +476,7 @@ export class SlideView extends DOMWidgetView {
     this._canvas.addEventListener('pointerdown', (e) => {
       if (!this._transform) return;
       this._canvas.setPointerCapture(e.pointerId);
-      // M3 click vs pan: a pointerup within ~4 CSS px of the pointerdown is
+      // Click vs pan: a pointerup within ~4 CSS px of the pointerdown is
       // a click (a draft vertex in drawing mode); beyond that the gesture
       // is a pan (left or right drag).
       this._dragging = {
@@ -485,7 +485,7 @@ export class SlideView extends DOMWidgetView {
         button: e.button,
         moved: false,
       };
-      // M6: a press on a vertex handle grabs the vertex (DESIGN.md §6.7):
+      // A press on a vertex handle grabs the vertex (docs/annotations.md):
       // the drag moves the vertex, never pans, and the still-click on
       // release neither adds a draft vertex nor re-selects.
       this._vertexDrag = this._grabVertex(e);
@@ -506,7 +506,7 @@ export class SlideView extends DOMWidgetView {
       this._dragging.y = e.clientY;
       this._dragging.moved = true;
       if (this._vertexDrag) {
-        // M6: the grabbed vertex follows the cursor (no pan).
+        // The grabbed vertex follows the cursor (no pan).
         const [lx, ly] = math.screenToL0(
           this._transform, e.clientX - rect.left, e.clientY - rect.top);
         if (this._vertexDrag.kind === 'draft') {
@@ -536,7 +536,7 @@ export class SlideView extends DOMWidgetView {
       this._vertexDrag = null;
       const dist = Math.hypot(e.clientX - d.sx, e.clientY - d.sy);
       if (vd) {
-        // M6: the gesture started on a vertex handle (DESIGN.md §6.7):
+        // The gesture started on a vertex handle (docs/annotations.md):
         // no pan happened, and the still-click release neither adds a
         // draft vertex nor re-selects.
         if (vd.kind === 'feature' && d.moved && this._vertexMove) {
@@ -592,13 +592,13 @@ export class SlideView extends DOMWidgetView {
       }
       if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_DRAWING && this._transform) {
-        // A still left click in drawing mode (DESIGN.md §6.7):
+        // A still left click in drawing mode (docs/annotations.md):
         //  - near the selected feature's edge: insert a vertex at the
         //    *click* (the shape bulges toward it) into the closest
         //    segment, committed as `add_vertex` with a pending preview
         //    until the round-trip resolves it;
         //  - otherwise: append the cursor's slide position (unclamped
-        //    level-0 px) as the next draft vertex. M6: the selection goes
+        //    level-0 px) as the next draft vertex. The selection goes
         //    with the new draft (its first vertex supersedes it; later
         //    vertices are no-ops).
         const rect = this._canvas.getBoundingClientRect();
@@ -631,7 +631,7 @@ export class SlideView extends DOMWidgetView {
         this._requestDraw();
       } else if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_IDLE && this._transform) {
-        // M4: a still left click in idle mode selects the topmost
+        // A still left click in idle mode selects the topmost
         // annotation under the cursor (a miss deselects).
         const rect = this._canvas.getBoundingClientRect();
         const id = hitTest(
@@ -689,7 +689,7 @@ export class SlideView extends DOMWidgetView {
     });
   }
 
-  // -------------------------------------------------- M3 polygon drawing
+  // -------------------------------------------------- polygon drawing
   _toggleDrawMode() {
     const entering = this._poly.mode !== MODE_DRAWING;
     if (entering && !this.model.get('slide_open')) {
@@ -700,12 +700,12 @@ export class SlideView extends DOMWidgetView {
     const { state, result } = polyEvent(this._poly, { type: 'toggle' });
     this._poly = state;
     this._setDrawModeUI(state.mode === MODE_DRAWING);
-    // M6: the selection is preserved across the mode toggle: in drawing
+    // The selection is preserved across the mode toggle: in drawing
     // mode the selected feature's vertex handles stay up, so a selected
     // annotation can be entered-annotate -> drag-vertex edited without
     // re-selecting (the first draft vertex still supersedes it).
     if (result && result.op === 'save') {
-      // JS->Py last-event wire (DESIGN.md §6.4): open ring, level-0 px,
+      // JS->Py last-event wire (docs/DESIGN.md §6.4): open ring, level-0 px,
       // unclamped. Python normalizes, appends, and reports via `status`.
       this.model.set('last_polygon', result.ring);
       this.model.save();
@@ -727,7 +727,7 @@ export class SlideView extends DOMWidgetView {
     this._requestDraw();
   }
 
-  // The drawing mode's UI state (DESIGN.md §6.4): the canvas's drawing
+  // The drawing mode's UI state (docs/DESIGN.md §6.4): the canvas's drawing
   // cursor class, and the annotate button's pressed look (aria-pressed;
   // style/index.css gives it the highlighted "on" style).
   _setDrawModeUI(active) {
@@ -766,7 +766,7 @@ export class SlideView extends DOMWidgetView {
     this._scheduleSync();
   }
 
-  // --------------------------------------------- M4: annotation editing
+  // --------------------------------------------- annotation editing
   _selectedFeature() {
     if (this._selectedId === null) return null;
     const doc = this.model.get('annotations');
@@ -774,7 +774,7 @@ export class SlideView extends DOMWidgetView {
     return features.find((f) => f && f.id === this._selectedId) || null;
   }
 
-  /** M6 (DESIGN.md §6.7): the drawn annotation document: the pushed set
+  /** The drawn annotation document (docs/annotations.md): the pushed set
    * with the pending vertex previews layered on — the not-yet-pushed
    * `add_vertex` insert first (its segment index addresses the pushed
    * document), then the live/pending vertex move (whose flat position
@@ -793,7 +793,7 @@ export class SlideView extends DOMWidgetView {
     return doc;
   }
 
-  /** M6: the selected feature as drawn (pushed set + pending vertex
+  /** The selected feature as drawn (pushed set + pending vertex
    * previews) — what the handles are drawn on, so grabbing and drawing
    * agree (a not-yet-pushed inserted vertex is grabbable immediately).
    */
@@ -812,7 +812,7 @@ export class SlideView extends DOMWidgetView {
     return features.find((f) => f && f.id === id) || null;
   }
 
-  /** M6: has the pending `add_vertex` already landed in the pushed set
+  /** Has the pending `add_vertex` already landed in the pushed set
    * (its push arrived — the inserted position is a real position of the
    * pushed document now)? Pure against the model.
    */
@@ -828,7 +828,7 @@ export class SlideView extends DOMWidgetView {
   }
 
   /**
-   * M6 (DESIGN.md §6.7): the vertex handle pressed at pointerdown —
+   * The vertex handle pressed at pointerdown (docs/annotations.md) —
    * {kind: 'draft' | 'feature', id? (feature only), index} or null.
    * Draft vertices grab in drawing mode (before the selected feature's,
    * since a press can sit on both); the selected feature's vertices grab
@@ -858,7 +858,7 @@ export class SlideView extends DOMWidgetView {
     }
   }
 
-  /** del / label / color buttons (DESIGN.md §6.5): the edit commands,
+  /** del / label / color buttons (docs/DESIGN.md §6.5): the edit commands,
    * issued through the `annotation_edit` last-event slot.
    */
   _annotationAction(action) {
@@ -1020,7 +1020,7 @@ export class SlideView extends DOMWidgetView {
     }
     const ctx = this._canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // M5: cross-fade the incoming level. `_blend` is the transition
+    // Cross-fade the incoming level. `_blend` is the transition
     // recorded at the last tile_geo push; levelAlphas() yields the
     // per-level alpha (new level at 1, old level fading 1 -> 0). When no
     // transition is in flight the alphas reduce to {selected: 1} and the
@@ -1046,13 +1046,13 @@ export class SlideView extends DOMWidgetView {
     this._drawMinimapViewport();
     this._updateReadout();
     this._updateCursorReadout();
-    // M5: step the cross-fade on the next frame until it completes.
+    // Step the cross-fade on the next frame until it completes.
     if (this._blend && !blend.done(this._blend, now)) {
       this._requestDraw();
     }
   }
 
-  /** M2: overlay pass — read-only annotation shapes, reprojected each frame. */
+  /** Overlay pass — read-only annotation shapes, reprojected each frame. */
   _drawAnnotations() {
     const t = this._transform;
     const dpr = window.devicePixelRatio || 1;
@@ -1065,7 +1065,7 @@ export class SlideView extends DOMWidgetView {
     const actx = c.getContext('2d');
     actx.setTransform(dpr, 0, 0, dpr, 0, 0);
     actx.clearRect(0, 0, w, h);
-    // M6: the pending vertex previews (a saved-feature drag in flight, a
+    // The pending vertex previews (a saved-feature drag in flight, a
     // not-yet-pushed click-inserted vertex) layered over the pushed set
     // (see _effectiveAnnotations).
     const doc = this._effectiveAnnotations();
@@ -1075,7 +1075,7 @@ export class SlideView extends DOMWidgetView {
       alpha: this._annotAlpha,
       selectedId: this._selectedId,
     });
-    // M6 (DESIGN.md §6.7): the draggable vertex handles, on top of the
+    // The draggable vertex handles (docs/annotations.md), on top of the
     // shapes: the selected feature's vertices (both modes — a still click
     // grabs, a drag commits `set_vertex`) and, while drawing, the draft's
     // vertices (a still click grabs, a drag moves the draft vertex; a
@@ -1093,8 +1093,8 @@ export class SlideView extends DOMWidgetView {
         drawVertexHandles(actx, t, featurePositions(f), hl);
       }
     }
-    // M3: the in-progress polygon draft, on top of the imported features,
-    // under the same alpha slider (DESIGN.md §6.4).
+    // The in-progress polygon draft, on top of the imported features,
+    // under the same alpha slider (docs/DESIGN.md §6.4).
     if (this._poly.mode === MODE_DRAWING) {
       drawDraftPolygon(actx, {
         transform: t,
@@ -1110,7 +1110,7 @@ export class SlideView extends DOMWidgetView {
         drawVertexHandles(actx, t, this._poly.draft, hl);
       }
     }
-    // M6 (DESIGN.md §6.7): the click-to-insert hover preview — pointer on
+    // The click-to-insert hover preview (docs/annotations.md) — pointer on
     // the canvas (no gesture in flight), drawing mode, and a still click
     // this close to a segment of the selected feature would insert a
     // vertex at the click (the shape bulges toward it). The same

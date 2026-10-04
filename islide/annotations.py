@@ -1,4 +1,4 @@
-"""Pure GeoJSON -> canonical annotation document (M3.5, DESIGN.md §6.3).
+"""Pure GeoJSON -> canonical annotation document (docs/DESIGN.md §6.3).
 
 Read-only annotation import: a GeoJSON document (``FeatureCollection`` /
 ``Feature`` / bare geometry) is normalized into the **canonical annotation
@@ -26,7 +26,7 @@ renders read-only:
   dropped (warning).
 * **Ids**: a feature's ``id`` (str/int/float -> ``str``) if present, else a
   fresh ``aN``; ids are unique across the document and a collision raises
-  ``ValueError`` — including the latent M2 case of a
+  ``ValueError`` — including the case of a
   ``GeometryCollection`` feature *with* an ``id`` expanding into 2+
   members (its id cannot be shared).
 * **Properties**: a ``null``-valued key is dropped (the canonical form
@@ -97,7 +97,7 @@ def parse_annotations(doc: Any) -> dict:
         fid_s = None if fid is None else str(fid)
         if fid_s is not None and len(leaves) > 1:
             # A GeometryCollection feature expands into several features;
-            # they cannot share one id (the latent M2 bug, now a hard error).
+            # they cannot share one id (a hard error).
             raise ValueError(
                 f"duplicate annotation id {fid_s!r}: a GeometryCollection "
                 f"feature expands into {len(leaves)} features, which cannot "
@@ -167,7 +167,7 @@ def _feature_parts(feature: Any) -> tuple[dict | None, dict, Any]:
 def _check_props(props: dict) -> None:
     """The renderer reads exactly label/color/fill from properties: those
     must be strings (or absent/null). Everything else passes through whole,
-    unchecked (M3.5)."""
+    unchecked."""
     for key in ("label", "color", "fill"):
         v = props.get(key)
         if v is not None and not isinstance(v, str):
@@ -322,7 +322,7 @@ def normalize_ring(ring: Any) -> list[list[float]] | None:
     position removed), in input order.
 
     This is the single normalization every polygon ring goes through, so
-    drawn rings (`SlideViewer.last_polygon`, M3) and imported GeoJSON rings
+    drawn rings (`SlideViewer.last_polygon`) and imported GeoJSON rings
     (below) cannot diverge. Returns ``None`` for a degenerate ring — fewer
     than 3 points, a non-finite coordinate, or zero area (collinear) — and
     also ``None`` for malformed input; callers that need strict structural
@@ -383,10 +383,10 @@ def _path_length(pts: list[tuple[float, float]]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# M4: edit commands
+# Edit commands
 
 
-# M4 edit operations (DESIGN.md §6.5): the `annotation_edit` last-event
+# Edit operations (docs/DESIGN.md §6.5): the `annotation_edit` last-event
 # command is discriminated by `op`; the ops are idempotent over a
 # normalized document (a replayed `delete` finds no feature, the replayed
 # set ops store the same values; a replayed `set_vertex` stores the same
@@ -396,9 +396,9 @@ EDIT_OPS = ("delete", "set_label", "set_color", "set_vertex", "add_vertex")
 
 
 def apply_edit(doc: dict, cmd: Any) -> dict | None:
-    """Purely apply one M4 edit command to the canonical document.
+    """Purely apply one edit command to the canonical document.
 
-    ``cmd`` is one of (DESIGN.md §6.5):
+    ``cmd`` is one of (docs/DESIGN.md §6.5):
 
         {"op": "delete", "id": <str>}
         {"op": "set_label", "id": <str>, "label": <str | None>}
@@ -413,14 +413,15 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
     feature of ``doc`` (a stale id — the caller keeps the current state).
     ``set_label`` stores ``label`` (``""``/whitespace-only/``None`` = no
     label — the ``label`` key is dropped); ``set_color`` stores the
-    ``color``/``fill`` pair (``None`` members are dropped — the M2
+    ``color``/``fill`` pair (``None`` members are dropped — the
     use-the-default convention: black stroke, transparent fill).
     ``set_vertex`` moves one position of the feature — the flat
     ``index`` in the feature's canonical position order (a Point's single
     position; a MultiPoint's / LineString's positions; a Polygon's rings
     in order — outer first, then holes, positions within a ring; a
     MultiPolygon's islands in order, rings within an island, positions
-    within a ring) — to level-0 px ``(x, y)`` (DESIGN.md §6.7); the moved
+    within a ring) — to level-0 px ``(x, y)`` (docs/annotations.md);
+    the moved
     geometry must keep the document's degeneracy invariants (every ring
     at or above the area threshold, a LineString at or above the length
     threshold) — a move that degenerates the geometry raises

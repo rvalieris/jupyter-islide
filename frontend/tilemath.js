@@ -1,7 +1,7 @@
 /**
  * Pure viewport/tile math shared by the islide view and its tests.
  *
- * Contract (see DESIGN.md §4, §7):
+ * Contract (see docs/DESIGN.md §4, §7):
  *   viewport wire form: { cx, cy, zoom, canvas_w, canvas_h }
  *       cx, cy  : slide (level-0) coordinates of the canvas center
  *       zoom    : screen px per level-0 pixel (1.0 == 1:1)
@@ -128,7 +128,7 @@ export function viewportL0Bbox(t) {
  * level_downsamples[L] >= 1 / zoom (the finest level whose own
  * resolution still meets the on-screen resolution). Mirrors Python's
  * `select_level` (islide.plan) — the view uses it to detect level
- * changes between tile_geo pushes (M5 cross-fade, DESIGN.md §6.6).
+ * changes between tile_geo pushes (cross-fade, docs/DESIGN.md §6.6).
  */
 export function selectLevel(downsamples, zoom) {
   const need = 1 / zoom;

@@ -1,6 +1,6 @@
 """Viewport -> read plan. Pure math over :class:`SlideMeta`; no I/O.
 
-Coordinate models (verified against libopenslide, see DESIGN.md §8):
+Coordinate models (verified against libopenslide, see docs/DESIGN.md §8):
 
 * ``read_region(location=loc_l0, level=L, size=(w, h))`` returns an image of
   exactly ``(w, h)`` (out-of-bounds areas filled by the vendor, e.g.
@@ -9,8 +9,8 @@ Coordinate models (verified against libopenslide, see DESIGN.md §8):
 * Consequence: ``loc_l0 = ceil(P * ds[L])`` anchors the read at exactly
   level pixel ``P`` (for ``ds >= 1``; see ``test_plan.py``).
 
-M5 (DESIGN.md §6.6): the plan's tiles are additionally grouped into
-chunks — grid-anchored 4x4-cell (1024-px at the default cell) blocks,
+The plan's tiles are additionally grouped into chunks (docs/DESIGN.md
+§6.6) — grid-anchored 4x4-cell (1024-px at the default cell) blocks,
 center-first by distance from the viewport center. Each chunk is one
 covering read; the widget pushes the center chunk first, then the full
 tile set.
@@ -36,7 +36,7 @@ class Tile:
 class Chunk:
     """One center-first fetch block: a grid-anchored 4x4 tile-cell read of
     the plan's level, with the plan's tiles that fall inside it
-    (DESIGN.md §6.6).
+    (docs/DESIGN.md §6.6).
 
     ``loc``/``size`` are the ``read_region`` arguments (level-0 location,
     level-px size); ``read_origin`` is the block's top-left in level px,
@@ -61,7 +61,7 @@ class ReadPlan:
     single covering read of the pre-chunk pipeline); ``chunks`` splits the
     same tiles into grid-anchored 1024-px blocks, center-first — the
     widget pushes the center chunk first, then the full tile set
-    (DESIGN.md §6.6). A viewport small enough for one block is a
+    (docs/DESIGN.md §6.6). A viewport small enough for one block is a
     single-chunk plan.
     """
 
@@ -108,7 +108,7 @@ def _chunk_tiles(
     tiles: list[Tile],
     t: int,
 ) -> tuple[Chunk, ...]:
-    """Group the plan's tiles into chunks (DESIGN.md §6.6).
+    """Group the plan's tiles into chunks (docs/DESIGN.md §6.6).
 
     A tile belongs to the grid-anchored block of its cell
     (``tx // 4``, ``ty // 4`` — a 4x4-cell, 1024-px at the default cell
@@ -164,8 +164,8 @@ def plan_viewport(
     One region read per level (the level covering the viewport), clamped to
     the level bounds, sliced into a ``tile_size`` grid. The tile grid is
     global (aligned to 0 at every zoom), so tiles are cache-stable across
-    pan/zoom. M5 (DESIGN.md §6.6): the tiles are also grouped into
-    chunks (grid-anchored 4x4-cell blocks, center-first) — each chunk is
+    pan/zoom. The tiles are also grouped into chunks (grid-anchored 4x4-cell
+    blocks, center-first; docs/DESIGN.md §6.6) — each chunk is
     one ``read_region``; the widget pushes the center chunk first, then
     the full tile set.
     """

@@ -1,5 +1,5 @@
 /**
- * Polygon drawing support (M3, DESIGN.md §6.4). Two pure parts, both
+ * Polygon drawing support (docs/DESIGN.md §6.4). Two pure parts, both
  * node-testable without a DOM:
  *
  *   - the drawing-mode state machine: keyboard/pointer events advance
@@ -17,7 +17,7 @@ import {
   VERTEX_PICK_RADIUS, DASH_PATTERN,
 } from './annotations.js';
 
-// The dashed style moved to annotations.js (shared with the M6 insert
+// The dashed style moved to annotations.js (shared with the insert
 // preview); re-exported to keep this module's public API.
 export { DASH_PATTERN };
 
@@ -83,7 +83,7 @@ export function polyDrawInit() {
  *                                (valid ring) or discard
  *   { type: 'cancel' }           Esc: discard the draft, exit
  *   { type: 'vertex', x, y }     a still left click: append a vertex
- *   { type: 'move_vertex',      M6: a grabbed draft vertex follows the
+ *   { type: 'move_vertex',      a grabbed draft vertex follows the
  *     index, x, y }              cursor (index: the draft's flat position
  *                                index; a bad index or a non-finite
  *                                position is a no-op)
@@ -145,7 +145,7 @@ export function polyEvent(state, event) {
 }
 
 /**
- * M6 (DESIGN.md §6.7): the flat index of the draft vertex within
+ * docs/annotations.md: the flat index of the draft vertex within
  * `VERTEX_PICK_RADIUS` screen px of the screen point (x, y) (the nearest
  * first), or null (a miss). The view's pointerdown grabs it before any
  * click/pan handling, so a press on a draft vertex never adds a new one.

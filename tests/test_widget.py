@@ -1,4 +1,4 @@
-"""M1 `SlideViewer` (custom DOMWidget) tests — headless (no JS view).
+"""`SlideViewer` (custom DOMWidget) tests — headless (no JS view).
 
 Covers: background open + wait(), synced-state contract (tiles/tile_geo),
 programmatic viewport API, cache invariance across panning, error path,

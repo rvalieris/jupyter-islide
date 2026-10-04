@@ -1,5 +1,5 @@
 /**
- * Level cross-fade math tests (M5, node --test).
+ * Level cross-fade math tests (node --test).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,7 +1,7 @@
 /**
  * The model defaults must mirror the Python-side sync trait set exactly
- * (DESIGN.md §7). The Python side has the reverse guard in
- * tests/test_widget_m1.py.
+ * (docs/DESIGN.md §7). The Python side has the reverse guard in
+ * tests/test_widget.py.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';

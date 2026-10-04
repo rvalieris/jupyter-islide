@@ -72,11 +72,12 @@ Other constructor args: `canvas_w`, `tile_size`, `cache_max_mb` and
 `jpeg_quality` (tile JPEG quality, 1–95, default 85 — the minimap and the
 `read_crop` path are unaffected).
 
-**Annotations (read-only).** Import a GeoJSON document — a file path or
+**Annotations.** Import a GeoJSON document — a file path or
 a parsed dict: a `FeatureCollection` of `{id, geometry, properties}`
 features (`Point`, `MultiPoint`, `LineString`, `Polygon`, `MultiPolygon`; a
 single `Feature` or a bare geometry is accepted too). The synced
-`annotations` trait holds the **canonical document** (DESIGN.md §6.3): a
+`annotations` trait holds the **canonical document** (docs/annotations.md):
+a
 plain-JSON `FeatureCollection` in level-0 px — rings open, coordinates
 finite floats, ids assigned, `properties` kept whole. Features render on
 an overlay canvas with per-feature `color`/`fill`/`label` properties and a
@@ -243,8 +244,11 @@ frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   labextension.js  widget-registry registration
   labextension/  (build output, gitignored — the compiled labextension)
 
+docs/            DESIGN.md (the design document) + annotations.md,
+                 testing.md, packaging.md, openslide-api.md
 tests/           pytest (pure math runs without openslide)
-data/            test slide (whole-slide TIFF, 37382x73222, 8 levels)
+data/            test slides (local, gitignored — the test suite downloads
+                 CMU-1.tiff from openslide-testdata)
 ```
 
 ## Tests

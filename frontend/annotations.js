@@ -1,8 +1,8 @@
 /**
- * Annotation overlay (M2 primitives; M3.5 canonical document).
+ * Annotation overlay (primitives; canonical document).
  *
  * `drawAnnotations` renders the synced `annotations` trait — the canonical
- * annotation document, a GeoJSON FeatureCollection in level-0 px (DESIGN.md
+ * annotation document, a GeoJSON FeatureCollection in level-0 px (docs/DESIGN.md
  * §6.3) — read-only on the overlay canvas. Each feature keeps its geometry
  * type: `Point`/`MultiPoint` draw white-haloed circle markers (one per
  * position), `LineString` strokes an open path, `Polygon`/`MultiPolygon`
@@ -19,12 +19,12 @@
  * renderer cannot draw is skipped (the one-line guard below) and the rest
  * still draw.
  *
- * M4 (DESIGN.md §6.5): `selectedId` marks one feature as selected — it is
+ * Selection (docs/DESIGN.md §6.5): `selectedId` marks one feature as selected — it is
  * drawn last (topmost) with a `SELECTED_COLOR` accent stroke at
  * `SELECTED_STROKE_WIDTH` (a selected point gets an accent ring around its
  * marker); `hitTest` is the pure screen-space counterpart of the draw.
  *
- * M6 (DESIGN.md §6.7) vertex editing: `featurePositions` flattens a
+ * Vertex editing (docs/annotations.md): `featurePositions` flattens a
  * feature's positions in the canonical order a `set_vertex` `index`
  * addresses (the JS twin of Python's apply_edit walk); `hitTestVertex`
  * finds the grabbable position under a screen point; `withMovedVertex`
@@ -49,14 +49,14 @@ export const POINT_RADIUS = 4; // screen px
 export const HALO_EXTRA = 1.5; // white ring around point bodies, screen px
 export const LABEL_FONT = '12px sans-serif';
 export const LABEL_HALO = 3; // white text halo, screen px
-// M4 selection (screen px): the accent stroke of a selected feature and
+// Selection (screen px): the accent stroke of a selected feature and
 // the hit-test tolerances (a line is hit within LINE_HIT_TOLERANCE of any
 // segment; a polygon outline is hit within STROKE_WIDTH of a ring edge).
 export const SELECTED_COLOR = '#ff8c00';
 export const SELECTED_STROKE_WIDTH = 3;
 export const POINT_HIT_RADIUS = POINT_RADIUS + HALO_EXTRA + 2; // ~8 px
 export const LINE_HIT_TOLERANCE = 6;
-// M6 vertex editing (screen px): the vertex-handle grab radius and the
+// Vertex editing (screen px): the vertex-handle grab radius and the
 // handle body radius (a grabbed handle draws 1.5 px larger); and the
 // click-to-insert segment tolerance (a still click that close to a
 // segment of the selected feature inserts a vertex at the click — the
@@ -71,9 +71,9 @@ export const DASH_PATTERN = [6, 4];
 /**
  * Draw every feature of the annotation document under `transform` onto
  * `ctx`. `annotations` is the canonical document (a GeoJSON
- * FeatureCollection; see DESIGN.md §6.3); a missing/invalid document
+ * FeatureCollection; see docs/DESIGN.md §6.3); a missing/invalid document
  * draws nothing. `alpha` (0..1) sets the whole layer's opacity via
- * `globalAlpha`. `selectedId` (M4) marks the selected feature: it is
+ * `globalAlpha`. `selectedId` marks the selected feature: it is
  * drawn last (topmost) with the accent style. Returns the number of
  * features drawn (culled ones excluded).
  */
@@ -120,7 +120,7 @@ export function drawAnnotations(
 }
 
 /**
- * M4 hit-test (DESIGN.md §6.5): the id of the topmost (last-in-document)
+ * Hit-test (docs/DESIGN.md §6.5): the id of the topmost (last-in-document)
  * feature under a screen point `(x, y)`, or `null` (a miss). Points and
  * markers: within `POINT_HIT_RADIUS` screen px of a marker position.
  * Lines: within `LINE_HIT_TOLERANCE` screen px of any segment. Polygons:
@@ -156,7 +156,7 @@ export function hitTest(annotations, transform, x, y) {
   return null;
 }
 
-// ------------------------------------------------------------------ M4
+// ------------------------------------------------------------------ selection
 
 function positionsNear(positions, t, x, y, r) {
   for (const [x0, y0] of positions) {
@@ -278,7 +278,7 @@ function drawFeature(ctx, t, f, g, positions, selected) {
   }
 }
 
-/** The M4 accent ring around a selected point's marker: an
+/** The accent ring around a selected point's marker: an
  * `SELECTED_COLOR` stroke at `SELECTED_STROKE_WIDTH` spanning the halo. */
 function drawSelectedRing(ctx, t, positions) {
   for (const [x, y] of positions) {
@@ -333,11 +333,11 @@ function isNumber(v) {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-// --------------------------------------------------------------- M6
+// --------------------------------------------------------------- vertex editing
 
 /**
  * The positions of a feature in the canonical flat order a `set_vertex`
- * `index` addresses (DESIGN.md §6.7, the JS twin of Python's apply_edit
+ * `index` addresses (docs/annotations.md, the JS twin of Python's apply_edit
  * walk): Point's single position; MultiPoint/LineString in coordinate
  * order; Polygon's rings in order (outer first), positions within each
  * ring; MultiPolygon's islands in order, rings within each island,
@@ -581,7 +581,7 @@ export function hitTestVertex(feature, transform, x, y) {
 
 /**
  * A feature's segments in the flat canonical order an `add_vertex`
- * `index` addresses (DESIGN.md §6.7, the JS twin of Python's walk):
+ * `index` addresses (docs/annotations.md, the JS twin of Python's walk):
  * a LineString's consecutive pairs (`n - 1`); a Polygon's /
  * MultiPolygon's rings in canonical order, `n` segments per ring of `n`
  * positions (the closing edge back to the ring's first position counts).
@@ -674,7 +674,7 @@ export function addedVertexIndex(feature, segment) {
 }
 
 /**
- * The draggable vertex handles (DESIGN.md §6.7): a small white circle
+ * The draggable vertex handles (docs/annotations.md): a small white circle
  * with an accent stroke at each position (screen-constant, drawn on the
  * annotation overlay after the features so the handles stay grabbable
  * over the shapes). `highlightIndex` (a grabbed vertex) draws a slightly
@@ -707,7 +707,7 @@ export function drawVertexHandles(
 }
 
 /**
- * The click-to-insert hover preview (DESIGN.md §6.7): for the segment a
+ * The click-to-insert hover preview (docs/annotations.md): for the segment a
  * `hitTestSegment` hit would insert into, the two edges it would become
  * (dashed, the draft's "what will be drawn" style, from each segment
  * endpoint to the clicked point) and the ghost vertex handle at the

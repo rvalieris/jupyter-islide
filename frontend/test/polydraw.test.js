@@ -1,5 +1,5 @@
 /**
- * Polygon drawing tests (node --test): the M3 state machine, the JS twin of
+ * Polygon drawing tests (node --test): the state machine, the JS twin of
  * Python's normalize_ring, and the draft renderer with a mock canvas 2D
  * context (no DOM).
  */
@@ -169,7 +169,7 @@ test('drawDraftPolygon: vertex dots (halo + body), solid segments', () => {
   assert.equal(drawDraftPolygon(ctx, { transform: T, draft: TRI }), 3);
   const arcs = ctx.ops.filter(([m]) => m === 'arc');
   assert.equal(arcs.length, 6);
-  // l0 (0,0) -> screen (256,256): halo first, then body, M2 sizes
+  // l0 (0,0) -> screen (256,256): halo first, then body
   assert.deepEqual(arcs[0].slice(1, 3), [256, 256]);
   assert.equal(arcs[0][3], POINT_RADIUS + HALO_EXTRA);
   assert.equal(arcs[1][3], POINT_RADIUS);
@@ -213,7 +213,7 @@ test('drawDraftPolygon: alpha applies to the whole draft', () => {
   assert.deepEqual(alphas, [['set:globalAlpha', 0.5]]);
 });
 
-// ------------------------------------------------------------ M6 (vertex editing)
+// ------------------------------------------------------------ vertex editing
 
 test('hitTestDraftVertex: within VERTEX_PICK_RADIUS of a draft vertex', () => {
   const draft = [[0, 0], [30, 0]]; // l0 -> screen (256, 256) / (286, 256)

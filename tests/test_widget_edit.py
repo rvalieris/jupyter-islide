@@ -1,9 +1,9 @@
-"""M4 `SlideViewer` tests — headless (no JS view).
+"""`SlideViewer` edit-command tests — headless (no JS view).
 
 Covers: the Py<->JS `annotation_edit` wire — the JS->Py last-event slot
 holding the last issued edit command ({op: "delete" | "set_label" |
 "set_color" | "set_vertex" | "add_vertex", id, ...}) that the Python
-observer applies to the canonical annotation document (DESIGN.md §6.5): known
+observer applies to the canonical annotation document (docs/DESIGN.md §6.5): known
 ids applied (status "deleted #<id>" / "edited #<id> (label|color|vertex)"),
 unknown or stale ids a no-op with the "edit ignored: unknown annotation id"
 status and no warning, malformed or refused commands (a set_vertex with a bad

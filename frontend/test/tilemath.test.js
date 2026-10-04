@@ -114,7 +114,7 @@ test('viewport/transform wire form round-trip', () => {
   assert.deepEqual(math.transformToViewport(t), vp);
 });
 
-// ------------------------------------------------------------------ M5
+// ------------------------------------------------------------------ tile levels
 test('selectLevel mirrors Python select_level (smallest ds >= 1/zoom)', () => {
   const ds = [1, 2, 4, 8];
   assert.equal(math.selectLevel(ds, 8), 0);   // need 1/8
@@ -129,7 +129,7 @@ test('selectLevel mirrors Python select_level (smallest ds >= 1/zoom)', () => {
   assert.equal(math.selectLevel(ds, 0), 3);
 });
 
-test('visibleTiles reports each tile level (M5 cross-fade input)', () => {
+test('visibleTiles reports each tile level (cross-fade input)', () => {
   const t = math.makeTransform(256, 256, 1.0, 512, 512);
   const geo = {
     '0:0:0': [0, 0, 0, 256, 256],

@@ -182,7 +182,7 @@ test('drawOverlay reprojects under a local transform (smooth pan)', () => {
   assert.ok(Math.abs(w0 - META.dimensions[0] * 2.0) < 1e-9);
 });
 
-// ---------------------------------------------------------------- M5 cross-fade
+// ---------------------------------------------------------------- cross-fade
 const FADE_GEO = {
   '0:0:0': [0, 0, 0, 256, 256],
   '0:1:0': [0, 256, 0, 256, 256],

@@ -137,8 +137,8 @@ BIG = make_big_meta()
 
 
 class TestChunking:
-    """M5: the tile set is partitioned into 1024-px (4x4-tile) blocks,
-    each an independent read unit, ordered center-first (DESIGN.md §6.6)."""
+    """The tile set is partitioned into 1024-px (4x4-tile) blocks,
+    each an independent read unit, ordered center-first (docs/DESIGN.md §6.6)."""
 
     def test_single_chunk_when_plan_fits_one_block(self):
         # 4096-wide level, zoom 4 around one grid cell: one block

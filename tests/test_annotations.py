@@ -1,11 +1,11 @@
-"""M3.5 canonical annotation document tests (no openslide, no widget, no I/O).
+"""Canonical annotation document tests (no openslide, no widget, no I/O).
 
 Covers: the canonical document shape (FeatureCollection of
 {id, geometry, properties} features), document inputs (FeatureCollection /
 single Feature / bare geometry), structure-preserving normalization
 (Point/LineString/Polygon/Multi*, rings open, z dropped), GeometryCollection
-expansion (one feature per member, properties stamped, the M2 id-stamping
-bug now a ValueError), id assignment (explicit kept + str-coerced, fresh
+expansion (one feature per member, properties stamped, an id-bearing
+feature's id a ValueError), id assignment (explicit kept + str-coerced, fresh
 aN skipping used ids, duplicates a ValueError), properties passthrough
 (label/color/fill string-checked, the rest untouched), unit conversion
 (px default, um via mpp, before the degenerate checks), degenerate drops
@@ -239,7 +239,7 @@ class TestIds:
             parse_annotations(fc(feat(point(0, 0), fid=1), feat(point(1, 1), fid="1")))
 
     def test_geometry_collection_feature_id_cannot_be_shared(self):
-        # The latent M2 bug, fixed: an id-bearing GC feature expands into
+        # Fixed latent bug: an id-bearing GC feature expands into
         # several features, which cannot share one id.
         doc = feat(
             {"type": "GeometryCollection", "geometries": [point(0, 0), point(1, 1)]},
@@ -523,9 +523,9 @@ class TestNormalizeRing:
         assert normalize_ring([[0, 0], [1]]) is None
 
 
-# ------------------------------------------------------------- M4: apply_edit
+# ------------------------------------------------------------- apply_edit
 
-def _m4_doc():
+def _edit_doc():
     return fc(
         feat(point(1, 1), fid="a1"),
         feat(point(2, 2), {"label": "x", "fill": "rgba(0,0,255,0.5)"}, fid="a2"),
@@ -535,37 +535,37 @@ def _m4_doc():
 
 class TestApplyEditOps:
     def test_delete_removes_only_the_addressed_feature(self):
-        out = apply_edit(_m4_doc(), {"op": "delete", "id": "a2"})
+        out = apply_edit(_edit_doc(), {"op": "delete", "id": "a2"})
         assert [f["id"] for f in features(out)] == ["a1", "a3"]
 
     def test_delete_middle_keeps_order_and_the_rest(self):
-        out = apply_edit(_m4_doc(), {"op": "delete", "id": "a2"})
+        out = apply_edit(_edit_doc(), {"op": "delete", "id": "a2"})
         assert out["type"] == "FeatureCollection"
         assert out["features"][0]["geometry"] == point(1, 1)
         assert out["features"][1]["geometry"]["type"] == "LineString"
 
     def test_set_label_stores_and_clears(self):
-        out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a1", "label": "tumor"})
+        out = apply_edit(_edit_doc(), {"op": "set_label", "id": "a1", "label": "tumor"})
         assert out["features"][0]["properties"]["label"] == "tumor"
         for label in ("", "   ", None):  # clear: the key is dropped
             out = apply_edit(
-                _m4_doc(), {"op": "set_label", "id": "a2", "label": label}
+                _edit_doc(), {"op": "set_label", "id": "a2", "label": label}
             )
             assert "label" not in out["features"][1]["properties"]
 
     def test_set_color_stores_pair_and_resets_to_the_default(self):
         out = apply_edit(
-            _m4_doc(),
+            _edit_doc(),
             {"op": "set_color", "id": "a1", "color": "red", "fill": "rgba(0,255,0,0.2)"},
         )
         assert out["features"][0]["properties"] == {
             "color": "red", "fill": "rgba(0,255,0,0.2)"
         }
-        out = apply_edit(_m4_doc(), {"op": "set_color", "id": "a2", "color": None, "fill": None})
+        out = apply_edit(_edit_doc(), {"op": "set_color", "id": "a2", "color": None, "fill": None})
         assert out["features"][1]["properties"] == {"label": "x"}
 
     def test_set_ops_preserve_other_property_keys(self):
-        out = apply_edit(_m4_doc(), {"op": "set_label", "id": "a2", "label": "y"})
+        out = apply_edit(_edit_doc(), {"op": "set_label", "id": "a2", "label": "y"})
         assert out["features"][1]["properties"] == {
             "label": "y", "fill": "rgba(0,0,255,0.5)",
         }
@@ -573,7 +573,7 @@ class TestApplyEditOps:
 
 class TestApplyEditUnknownId:
     def test_unknown_id_is_none_and_input_untouched(self):
-        doc = _m4_doc()
+        doc = _edit_doc()
         snapshot = copy.deepcopy(doc)
         assert apply_edit(doc, {"op": "delete", "id": "nope"}) is None
         assert doc == snapshot
@@ -589,14 +589,14 @@ class TestApplyEditPurityAndIdempotence:
             {"op": "set_label", "id": "a1", "label": "z"},
             {"op": "set_color", "id": "a3", "color": "blue", "fill": None},
         ):
-            doc = _m4_doc()
+            doc = _edit_doc()
             snapshot = copy.deepcopy(doc)
             out = apply_edit(doc, cmd)
             assert out is not doc
             assert doc == snapshot
 
     def test_idempotent_over_the_document(self):
-        doc = _m4_doc()
+        doc = _edit_doc()
         once = apply_edit(doc, {"op": "set_label", "id": "a1", "label": "t"})
         twice = apply_edit(once, {"op": "set_label", "id": "a1", "label": "t"})
         assert apply_edit(twice, {"op": "delete", "id": "a1"}) is not None
@@ -627,7 +627,7 @@ class TestApplyEditMalformed:
         ],
     )
     def test_malformed_command_is_a_value_error(self, cmd):
-        doc = _m4_doc()
+        doc = _edit_doc()
         with pytest.raises(ValueError):
             apply_edit(doc, cmd)
 
@@ -638,7 +638,7 @@ class TestApplyEditMalformed:
             apply_edit(None, {"op": "delete", "id": "a1"})
 
 
-# ----------------------------- set_vertex (vertex editing, DESIGN.md §6.7)
+# ----------------------------- set_vertex (vertex editing; docs/annotations.md)
 
 def _sv_doc():
     """One feature of each vertex-capable geometry type, ids sv_*.
@@ -791,7 +791,7 @@ class TestApplyEditSetVertex:
                              "index": 4, "x": 20, "y": 20})
 
 
-# ----------------------- add_vertex (vertex insertion, DESIGN.md §6.7)
+# ----------------------- add_vertex (vertex insertion; docs/annotations.md)
 
 def _av_doc():
     """One feature of each vertex-capable geometry type, ids av_*.

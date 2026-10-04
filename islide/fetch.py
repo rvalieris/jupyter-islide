@@ -49,8 +49,7 @@ def fetch_tiles(backend: Any, cache: Any, plan: ReadPlan) -> dict[tuple, Any]:
     Tiles are fetched per chunk, in chunk order (center-first for a
     multi-chunk plan): each chunk's cache misses are satisfied by one
     ``read_region`` for its read rect, sliced into tiles and cached.
-    A single-chunk plan does exactly one covering read — the whole
-    plan (the pre-M5 behavior).
+    A single-chunk plan does exactly one covering read — the whole plan.
     """
     result: dict[tuple, Any] = {}
     for chunk in plan.chunks:

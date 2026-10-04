@@ -1,8 +1,8 @@
 /**
  * Annotation overlay tests with a mock canvas 2D context (node --test).
  *
- * M3.5: the overlay consumes the canonical annotation document (a GeoJSON
- * FeatureCollection of {id, geometry, properties} features, DESIGN.md
+ * The overlay consumes the canonical annotation document (a GeoJSON
+ * FeatureCollection of {id, geometry, properties} features, docs/DESIGN.md
  * §6.3), not a flat shape list.
  */
 import test from 'node:test';
@@ -287,7 +287,7 @@ test('alpha sets globalAlpha for the whole layer; save/restore around it', () =>
   assert.equal(ctx2.state.globalAlpha, 1);
 });
 
-// ---------------------------------------------------------------- M4 (selection)
+// ---------------------------------------------------------------- selection
 
 test('hitTest: empty/invalid documents are misses', () => {
   for (const annotations of [undefined, null, {}, { features: [] },
@@ -442,7 +442,7 @@ test('drawAnnotations: selectedId that matches nothing draws normally', () => {
   assert.equal(ctx.ops.filter(([m]) => m === 'stroke').length, 0);
 });
 
-// ------------------------------------------------------------ M6 (vertex editing)
+// ------------------------------------------------------------ vertex editing
 
 const PG_HOLE = {
   type: 'Polygon',
@@ -578,7 +578,7 @@ test('drawVertexHandles: empty positions draw nothing', () => {
   assert.equal(ctx.ops.length, 0);
 });
 
-// -------------------------------------------- M6 (click-to-insert a vertex)
+// -------------------------------------------- click-to-insert a vertex
 
 test('withAddedVertex: linestring midpoint; input untouched', () => {
   const d = doc(

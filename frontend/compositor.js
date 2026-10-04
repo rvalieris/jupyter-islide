@@ -19,11 +19,11 @@ import * as math from './tilemath.js';
  * @param {object} opts.meta        slide meta (for level_downsamples)
  * @param {object} opts.tileGeo     { "L:tx:ty": [level, ox, oy, cw, ch] }
  * @param {Map<string, object>} opts.images  key -> decoded image (HTMLImageElement)
- * @param {Record<number, number>|null} opts.levelAlphas  M5 cross-fade: per-level
+ * @param {Record<number, number>|null} opts.levelAlphas  cross-fade: per-level
  *   alpha. When given, levels are drawn coarsest-first at their supplied
  *   alpha (levels without an entry, or at alpha 0, are skipped, so the
  *   fading-out level disappears at the fade's end). When omitted (the
- *   pre-M5 contract) every visible ready tile is drawn at full opacity in
+ *   single-level contract) every visible ready tile is drawn at full opacity in
  *   `tileGeo` insertion order.
  * @returns {number} number of tiles drawn
  */

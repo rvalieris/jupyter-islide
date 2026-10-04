@@ -2,7 +2,7 @@
  * Model attribute defaults shared by the SlideModel.
  *
  * The trait names here MUST match the Python-side `tag(sync=True)` traits
- * on `islide.widget.SlideViewer` (DESIGN.md §7).
+ * on `islide.widget.SlideViewer` (docs/DESIGN.md §7).
  */
 export const SLIDE_MODEL_DEFAULTS = {
   slide_open: false,
@@ -18,11 +18,11 @@ export const SLIDE_MODEL_DEFAULTS = {
   overlay_img: '',
   overlay_alpha: 0.5,
   last_polygon: null,
-  // M3.5: the canonical annotation document (a GeoJSON FeatureCollection
-  // in level-0 px; DESIGN.md §6.3). Rendered read-only by the JS view.
+  // The canonical annotation document (a GeoJSON FeatureCollection
+  // in level-0 px; docs/DESIGN.md §6.3). Rendered read-only by the JS view.
   annotations: { type: 'FeatureCollection', features: [] },
-  // M4/M6: the last issued annotation edit command (JS -> Py last-event
-  // slot; DESIGN.md §6.5/§6.7): {op: "delete" | "set_label" | "set_color",
+  // The last issued annotation edit command (JS -> Py last-event
+  // slot; docs/annotations.md): {op: "delete" | "set_label" | "set_color",
   // id, ...} or {op: "set_vertex", id, index, x, y} (index: the feature's
   // flat canonical position index, x/y level-0 px) or {op: "add_vertex",
   // id, index, x, y} (index: the feature's flat canonical *segment* index,

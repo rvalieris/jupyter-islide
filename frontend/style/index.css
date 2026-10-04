@@ -36,12 +36,12 @@
   cursor: grabbing;
 }
 
-/* M3 drawing mode: crosshair over the canvas (view.js toggles the class) */
+/* Drawing mode: crosshair over the canvas (view.js toggles the class) */
 .islide-canvas.islide-drawing {
   cursor: crosshair;
 }
 
-/* M2 annotation overlay: sits over the image canvas (below the minimap),
+/* Annotation overlay: sits over the image canvas (below the minimap),
    never takes mouse input. */
 .islide-annotations {
   position: absolute;
@@ -99,12 +99,12 @@
   cursor: pointer;
 }
 
-/* M4: the edit buttons group after the zoom group (view.js). */
+/* The edit buttons group after the zoom group (view.js). */
 .islide-btn[data-action="annotate"] {
   margin-left: 8px;
 }
 
-/* M4: the annotate button shows the drawing mode (view.js): while a
+/* The annotate button shows the drawing mode (view.js): while a
    polygon is being drafted it is aria-pressed and reads as "on" —
    filled brand-color background, inverse-layout text. */
 .islide-btn[data-action="annotate"][aria-pressed="true"] {
@@ -112,7 +112,7 @@
   color: var(--jp-inverse-layout-color0, #fff);
 }
 
-/* M4: toolbar editors appended next to the del/label/color buttons
+/* Toolbar editors appended next to the del/label/color buttons
    (view.js), only while open. */
 .islide-label-input {
   width: 140px;

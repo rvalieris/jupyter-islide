@@ -1,4 +1,4 @@
-"""M2 `SlideViewer` annotation API tests — headless (no JS view).
+"""`SlideViewer` annotation API tests — headless (no JS view).
 
 Covers: the synced `annotations` trait (starts as an empty canonical
 document, JSON-serializable, assignments coerced through the normalizer),

@@ -1,7 +1,7 @@
 """Slide viewer widget.
 
 :class:`SlideViewer` is a custom Jupyter widget (``DOMWidget`` subclass;
-see DESIGN.md §6, §10). The JS ``SlideView`` owns a canvas compositor and
+see docs/DESIGN.md §6, §7). The JS ``SlideView`` owns a canvas compositor and
 mouse/keyboard input; Python owns the slide, plans/fetches/caches/encodes
 tiles and pushes them as data URLs plus level-space geometry. Viewport
 changes flow back through the ``viewport`` trait (debounced by the view).
@@ -33,7 +33,7 @@ from .viewport import SlideMeta, Viewport, fit_zoom
 
 __all__ = ["SlideViewer"]
 
-# The empty canonical annotation document (DESIGN.md §6.3); the
+# The empty canonical annotation document (docs/DESIGN.md §6.3); the
 # `annotations` trait default, coerced through the normalizer on access.
 _EMPTY_ANNOTATION_DOC = {"type": "FeatureCollection", "features": []}
 
@@ -143,7 +143,7 @@ def _require_slide_source(path: str | None, slide: Any | None) -> tuple[Any | No
 
 
 class SlideViewer(widgets.DOMWidget):
-    """Interactive WSI viewer (M1): canvas compositor, Python-driven tiles.
+    """Interactive WSI viewer: canvas compositor, Python-driven tiles.
 
     Construct with a file path (``SlideViewer(path)``) or, for slide
     libraries that mirror openslide's API over other slide types, with an
@@ -165,7 +165,7 @@ class SlideViewer(widgets.DOMWidget):
       (``v.canvas_h = 900``). The JS view applies it to the canvas; its
       ResizeObserver then syncs the resized viewport back, which re-plans
       the tiles. Headless, the viewport is re-based directly.
-    * M4: ``annotation_edit`` (JS->Py last-event slot, DESIGN.md §6.5)
+    * ``annotation_edit`` (JS->Py last-event slot, docs/DESIGN.md §6.5)
       carries one view edit command (``delete`` / ``set_label`` /
       ``set_color`` / ``set_vertex`` / ``add_vertex``); the Python
       observer applies it with the pure ``apply_edit`` and pushes the
@@ -181,7 +181,7 @@ class SlideViewer(widgets.DOMWidget):
     _model_module_version = Unicode("2.0.0").tag(sync=True)
     _view_module_version = Unicode("2.0.0").tag(sync=True)
 
-    # -- synced state (Python <-> JS), see DESIGN.md §7 ---------------------
+    # -- synced state (Python <-> JS), see docs/DESIGN.md §7 ---------------------
     slide_open = Bool(False).tag(sync=True)
     meta = Dict(default_value=None, allow_none=True).tag(sync=True)  # SlideMeta as a dict
     viewport = Dict(default_value=None, allow_none=True).tag(sync=True)  # _vp_dict
@@ -210,22 +210,22 @@ class SlideViewer(widgets.DOMWidget):
         if not 0.0 <= v <= 1.0:
             raise TraitError("overlay_alpha must be in [0, 1]")
         return v
-    # M3: the last drawn polygon ring (JS -> Py): an open position list in
-    # unclamped level-0 px, or None (the last-event slot; DESIGN.md §6.4).
+    # The last drawn polygon ring (JS -> Py): an open position list in
+    # unclamped level-0 px, or None (the last-event slot; docs/DESIGN.md §6.4).
     # The Python observer is the final authority: valid ring -> append a
     # polygon feature to `annotations` (fresh id, empty properties);
     # degenerate ring -> warn + status, no state change.
     last_polygon = List(default_value=None, allow_none=True).tag(sync=True)
-    # M2/M3.5: the canonical annotation document in level-0 px (Py->JS;
-    # the JS view renders it read-only on an overlay canvas; DESIGN.md
+    # The canonical annotation document in level-0 px (Py->JS;
+    # the JS view renders it read-only on an overlay canvas; docs/DESIGN.md
     # §6.3): a GeoJSON FeatureCollection of {type, id, geometry,
     # properties} features. Any assignment is coerced through the
     # normalizer (validate below), so the trait always holds the
     # canonical document.
     annotations = Dict(default_value=_EMPTY_ANNOTATION_DOC).tag(sync=True)
-    # M4: the last issued annotation edit command (JS -> Py): a
+    # The last issued annotation edit command (JS -> Py): a
     # {"op": "delete" | "set_label" | "set_color" | "set_vertex" | "add_vertex",
-    # "id", ...} object or None (no command yet; DESIGN.md §6.5). The
+    # "id", ...} object or None (no command yet; docs/DESIGN.md §6.5). The
     # Python observer applies it to `annotations` (pure apply_edit) and
     # pushes the updated set; an unknown/stale id leaves the set untouched
     # (a status note instead). Last-event slot: re-attach replays it, and
@@ -236,7 +236,7 @@ class SlideViewer(widgets.DOMWidget):
 
     @validate("annotations")
     def _check_annotations(self, proposal):
-        """Coerce any assignment through the M3.5 normalizer."""
+        """Coerce any assignment through the normalizer."""
         try:
             return parse_annotations(proposal["value"])
         except ValueError as e:
@@ -454,10 +454,10 @@ class SlideViewer(widgets.DOMWidget):
     def _render_once(self) -> ReadPlan | None:
         """Plan + fetch + encode for the current viewport; push to the view.
 
-        M5 (DESIGN.md §6.6): a multi-chunk plan pushes twice — the center
+        A multi-chunk plan pushes twice (docs/DESIGN.md §6.6) — the center
         chunk first, then the full tile set — so the view can cross-fade
         the incoming level in from the middle out; a single-chunk plan
-        pushes once (exactly the pre-M5 behavior). Both pushes carry
+        pushes once. Both pushes carry
         identical geometry for shared tiles (absolute level px from the
         plan), so the view's accumulated tile state stays consistent.
         """
@@ -561,7 +561,7 @@ class SlideViewer(widgets.DOMWidget):
         assert self.backend is not None
         return self.backend.read_region((x0, y0), level, (x1 - x0, y1 - y0))
 
-    # ------------------------------------------------- M2: read-only annotations
+    # ------------------------------------------------- read-only annotations
     def set_annotations(self, source: str | Path | dict) -> dict:
         """Import a GeoJSON annotation document (replaces the current set).
 
@@ -623,7 +623,7 @@ class SlideViewer(widgets.DOMWidget):
         """Remove the overlay image (the view draws only tiles again)."""
         self.overlay_img = ""
 
-    # ------------------------------------------------- M4: annotation editing
+    # ------------------------------------------------- annotation editing
     def delete_annotation(self, feature_id: str) -> None:
         """Delete the annotation with the given id (the JS view's ``del``
         action, programmatically). Unknown ids are ignored (the status
@@ -641,7 +641,7 @@ class SlideViewer(widgets.DOMWidget):
         self, feature_id: str, color: str | None = None, fill: str | None = None
     ) -> None:
         """Set the stroke color and/or fill of the annotation with the given
-        id (CSS color strings; ``None`` = the M2 default: black stroke,
+        id (CSS color strings; ``None`` = the default: black stroke,
         transparent fill)."""
         self.annotation_edit = {
             "op": "set_color", "id": feature_id, "color": color, "fill": fill,
@@ -650,8 +650,9 @@ class SlideViewer(widgets.DOMWidget):
     def set_annotation_vertex(
         self, feature_id: str, index: int, x: float, y: float
     ) -> None:
-        """Move one position of the annotation with the given id (DESIGN.md
-        §6.7) — the same edit a vertex drag in the view issues: the
+        """Move one position of the annotation with the given id
+        (docs/annotations.md) — the same edit a vertex drag in the view
+        issues: the
         position at flat ``index`` in the feature's canonical position
         order (a Point's single position; a MultiPoint's / LineString's
         positions; a Polygon's rings in order — outer first, then holes,
@@ -670,7 +671,7 @@ class SlideViewer(widgets.DOMWidget):
         self, feature_id: str, index: int, x: float, y: float
     ) -> None:
         """Add one position to the annotation with the given id
-        (DESIGN.md §6.7) — the same edit a click on the selected
+        (docs/annotations.md) — the same edit a click on the selected
         feature's edge in the view issues: a position of level-0 px
         ``(x, y)`` is inserted at flat ``index`` in the feature's
         canonical segment order (a LineString's ``n`` positions give
@@ -687,11 +688,11 @@ class SlideViewer(widgets.DOMWidget):
             "index": int(index), "x": float(x), "y": float(y),
         }
 
-    # --------------------------------------- M3: drawn polygons (JS -> Py)
-    # (the M4 edit-command observer is registered with the M3 one above;
+    # --------------------------------------- drawn polygons (JS -> Py)
+    # (the edit-command observer is registered with this one above;
     # both apply to `annotations` and push the updated set)
     def _on_last_polygon_change(self, change: dict) -> None:
-        """A drawn polygon ring arrived from the view (DESIGN.md §6.4).
+        """A drawn polygon ring arrived from the view (docs/DESIGN.md §6.4).
 
         Normalize with the shared ring helper (the same code path imported
         GeoJSON rings use), then either append a polygon feature to
@@ -737,9 +738,9 @@ class SlideViewer(widgets.DOMWidget):
             n += 1
         return f"a{n}"
 
-    # ----------------------------------- M4: annotation editing (JS -> Py)
+    # ----------------------------------- annotation editing (JS -> Py)
     def _on_annotation_edit_change(self, change: dict) -> None:
-        """A view edit command arrived (DESIGN.md §6.5): apply it to
+        """A view edit command arrived (docs/DESIGN.md §6.5): apply it to
         ``annotations`` (pure ``apply_edit``) and push the updated set.
 
         A malformed command (warned) or an id that no longer addresses a

@@ -1,4 +1,4 @@
-"""M3 `SlideViewer` tests — headless (no JS view).
+"""`SlideViewer` drawn-polygon tests — headless (no JS view).
 
 Covers: the JS->Py `last_polygon` wire (the Python observer normalizes the
 draft ring with the shared helper, appends a polygon *feature* to the

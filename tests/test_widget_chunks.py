@@ -1,9 +1,9 @@
-"""M5 canvas-viewer tests — headless, no openslide.
+"""Canvas-viewer tests — headless, no openslide.
 
-Covers the M5 (DESIGN.md §6.6) two-stage push over the canvas widget:
+Covers the two-stage push over the canvas widget (docs/DESIGN.md §6.6):
 a multi-chunk plan pushes the center chunk first, then the full tile set
 (both pushes carry identical absolute level-px geometry); a single-chunk
-plan pushes once with a single grid-anchored read (the pre-M5 wire
+plan pushes once with a single grid-anchored read (the single-push wire
 contract); reads happen center-first in chunk order; and a burst of
 JS-originated viewports coalesces to a final state matching the final
 plan (the render-loop handoff).

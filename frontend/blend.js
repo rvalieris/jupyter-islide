@@ -1,5 +1,5 @@
 /**
- * Level cross-fade (M5, DESIGN.md §6.6) — pure transition math.
+ * Level cross-fade (docs/DESIGN.md §6.6) — pure transition math.
  *
  * When the selected pyramid level (Python `select_level`, mirrored by
  * `math.selectLevel`) changes between tile_geo pushes, the view records

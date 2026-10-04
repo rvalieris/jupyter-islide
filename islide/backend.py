@@ -8,7 +8,7 @@ object-oriented API (``openslide.open_slide``). It can also wrap an
 mirror openslide's API over different slide types.
 
 The ``SlideBackend`` interface is the seam for future remote backends
-(openslide-server HTTP, S3, ...) — see DESIGN.md §7.1.
+(openslide-server HTTP, S3, ...) — see docs/DESIGN.md §7.1.
 """
 from __future__ import annotations
 
