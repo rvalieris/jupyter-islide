@@ -220,14 +220,15 @@ JupyterLab. The canvas view is the only view.
     </div>
   </div>
   <div.islide-toolbar>
-    [fit] [1:1] [annotate] [del] [label] [color]
+    [fit] [1:1] [annotate] [ruler] [del] [label] [color]
     α <range>   zoom readout "2× · 500 µm/px"   cursor "23000, 16457"   status
   </div>
 </div>
 ```
 
 `del` / `label` / `color` are disabled until a feature is selected;
-`annotate` is pressed while drawing. The α slider is the annotation layer's
+`annotate` is pressed while drawing, `ruler` while measuring. The α
+slider is the annotation layer's
 opacity (view-local, 0–1). The full-slide overlay image is **not** a
 separate layer in the DOM — the compositor draws it on the tile canvas
 between the tiles and the annotations, at `overlay_alpha` opacity.
@@ -244,6 +245,7 @@ frontend/
   annotations.js drawAnnotations(ctx, {transform, annotations, …}) — the overlay
                  pass; hitTest / vertex+segment hit tests / draw helpers (pure)
   polydraw.js    drawing-mode state machine + drawDraftPolygon (pure)
+  ruler.js       ruler-measurement state machine + drawRuler (pure)
   model.js       SlideModel extends DOMWidgetModel (defaults only)
   view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap, toolbar)
   defaults.js    SLIDE_MODEL_DEFAULTS — the trait names shared with Python
@@ -284,7 +286,11 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 | toolbar **fit** / **1:1** | fit slide / 1:1 (the −/+ zoom buttons were dropped — wheel zoom covers them) |
 | toolbar **annotate** | toggle drawing mode (the visible entry point; pressed while drawing; **A** stays the alias) |
 | key **A** | toggle drawing mode (enter / save-and-exit) |
+| toolbar **ruler** | toggle ruler mode — drag to measure (the visible entry point; pressed while measuring; **R** stays the alias) |
+| key **R** | toggle ruler mode |
+| left drag (ruler mode) | measure the line under the drag — its length is labeled at the midpoint in µm and level-0 px (a still click clears the measurement; right drag still pans) |
 | key **Esc** (drawing mode) | cancel: discard the draft, exit |
+| key **Esc** (ruler mode) | clear the measurement, exit ruler mode |
 | left click (drawing mode) | append a polygon vertex (a ≥ 4 px left drag is still a pan) |
 | left click (idle) | hit-test the annotations at the cursor: hit → select (thick accent highlight), miss → deselect; a ≥ 4 px drag is still a pan |
 | toolbar **del** / **label** / **color** (a feature selected) | remove the selected feature / attach or edit its label / set its stroke color and fill (incl. clearing the fill) |
@@ -352,6 +358,24 @@ fresh non-colliding id (`a0`, `a1`, …). No programmatic draw API —
 drawing is a view interaction; the result lands in `v.annotations`
 like everything else. Details in
 [docs/annotations.md](docs/annotations.md).
+
+### 6.4.1 Ruler measurement (view-local; `frontend/ruler.js`)
+
+The toolbar's **ruler** button (alias **R**) toggles a measurement mode
+mutually exclusive with polygon drawing (entering either clears the
+other's live draft / measurement). In ruler mode a **left press** starts
+a measurement at the cursor and the **drag** moves its far end — no pan
+(right drag still pans; wheel zoom still works and reprojects the line,
+which is stored in level-0 px). On release the line and its label stay;
+a new drag replaces them, a **still click** clears them, and **Esc**
+(or the button again) exits the mode. The label at the line's midpoint
+shows the length in micrometers — the level-0 distance times the `meta`
+mpp — and in level-0 pixels (e.g. `200 µm · 400 px`; pixels only when
+the slide has no mpp). The measurement is pure view-local state
+(`{active, line}`, level-0 px, unclamped — `ruler.js`'s state machine,
+its `formatMeasure` formatting, and its `drawRuler` line+ticks+label
+render); it never touches the annotation document and never crosses the
+wire.
 
 ### 6.5 Annotation editing
 
@@ -598,7 +622,7 @@ multi-threaded fetch pass.
 ## 10. Testing
 
 Two suites, no browser required — 301 Python tests
-(`python -m pytest tests/`) and 98 JS tests
+(`python -m pytest tests/`) and 113 JS tests
 (`cd frontend && node --test test/`). Because the widget is a plain
 Python object until displayed, the whole Python-side state machine is
 tested headless, and the JS pure modules are tested against mock 2D

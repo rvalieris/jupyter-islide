@@ -20,6 +20,7 @@ import {
   CLICK_THRESHOLD_PX, MODE_DRAWING, MODE_IDLE, drawDraftPolygon,
   hitTestDraftVertex, polyDrawInit, polyEvent,
 } from './polydraw.js';
+import { drawRuler, rulerEvent, rulerInit } from './ruler.js';
 import {
   addedVertexIndex, drawAnnotations, drawInsertPreview, drawVertexHandles,
   featurePositions, hitTest, hitTestSegment, hitTestVertex, withAddedVertex,
@@ -52,6 +53,10 @@ export class SlideView extends DOMWidgetView {
     // Polygon drawing (docs/DESIGN.md §6.4): local drawing state (never
     // synced); `last_polygon` is the only JS->Py write.
     this._poly = polyDrawInit();
+    // Ruler measurement (docs/DESIGN.md §6.4.1): view-local state (never
+    // synced — the readout is a function of the level-0 line and the
+    // `meta` mpp, so the mode never crosses the wire).
+    this._ruler = rulerInit();
     // Vertex editing (docs/annotations.md): `_vertexDrag` is the grabbed
     // vertex (null when no handle was pressed): {kind: 'draft' | 'feature',
     // id? (feature only), index}; `_vertexMove` is the live local preview
@@ -102,6 +107,7 @@ export class SlideView extends DOMWidgetView {
         <button class="islide-btn" data-action="fit">fit</button>
         <button class="islide-btn" data-action="1:1">1:1</button>
         <button class="islide-btn" data-action="annotate" aria-pressed="false"><u>a</u>nnotate</button>
+        <button class="islide-btn" data-action="ruler" aria-pressed="false"><u>r</u>uler</button>
         <button class="islide-btn" data-action="del" disabled>del</button>
         <button class="islide-btn" data-action="label" disabled>label</button>
         <button class="islide-btn" data-action="color" disabled>color</button>
@@ -129,6 +135,7 @@ export class SlideView extends DOMWidgetView {
     // a selection exists).
     this._toolbarEl = this.el.querySelector('.islide-toolbar');
     this._annotateBtn = this.el.querySelector('[data-action="annotate"]');
+    this._rulerBtn = this.el.querySelector('[data-action="ruler"]');
     this._actionBtns = {
       del: this.el.querySelector('[data-action="del"]'),
       label: this.el.querySelector('[data-action="label"]'),
@@ -331,7 +338,8 @@ export class SlideView extends DOMWidgetView {
   /** Stale drawing messages (cancel/discard) clear on the next interaction.
    */
   _clearLocalStatusIfIdle() {
-    if (this._poly.mode !== MODE_DRAWING && this._localStatus !== null) {
+    if (this._poly.mode !== MODE_DRAWING && !this._ruler.active
+        && this._localStatus !== null) {
       this._localStatus = null;
       this._updateStatus();
     }
@@ -442,8 +450,9 @@ export class SlideView extends DOMWidgetView {
     // JupyterLab versions and the browser's native menu.
     this._canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // Keyboard (docs/DESIGN.md §6.4): A toggles polygon drawing, Esc cancels
-    // it. While the alpha input has focus its keys are left alone.
+    // Keyboard (docs/DESIGN.md §6.4, §6.4.1): A toggles polygon drawing,
+    // R toggles the ruler, Esc cancels the active one (the ruler first).
+    // While a toolbar input has focus its keys are left alone.
     this.el.addEventListener('keydown', (e) => {
       // Keys typed in a toolbar input (the alpha slider, the label /
       // color editors) are the input's own business.
@@ -451,9 +460,13 @@ export class SlideView extends DOMWidgetView {
       if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         this._toggleDrawMode();
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        this._toggleRulerMode();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        this._cancelDrawMode();
+        if (this._ruler.active) this._exitRulerMode();
+        else this._cancelDrawMode();
       }
     });
 
@@ -487,8 +500,19 @@ export class SlideView extends DOMWidgetView {
       };
       // A press on a vertex handle grabs the vertex (docs/annotations.md):
       // the drag moves the vertex, never pans, and the still-click on
-      // release neither adds a draft vertex nor re-selects.
-      this._vertexDrag = this._grabVertex(e);
+      // release neither adds a draft vertex nor re-selects. Ruler mode
+      // claims the left press instead (it starts a measurement).
+      this._vertexDrag = this._ruler.active ? null : this._grabVertex(e);
+      // Ruler mode (docs/DESIGN.md §6.4.1): a left press starts a new
+      // measurement at the cursor (the far end follows the drag); the
+      // right button still pans.
+      if (this._ruler.active && e.button === 0) {
+        const rect = this._canvas.getBoundingClientRect();
+        const [lx, ly] = math.screenToL0(
+          this._transform, e.clientX - rect.left, e.clientY - rect.top);
+        this._ruler = rulerEvent(
+          this._ruler, { type: 'begin', x: lx, y: ly }).state;
+      }
     });
     this._canvas.addEventListener('pointermove', (e) => {
       const rect = this._canvas.getBoundingClientRect();
@@ -522,6 +546,15 @@ export class SlideView extends DOMWidgetView {
             index: this._vertexDrag.index, x: lx, y: ly,
           };
         }
+        this._requestDraw();
+      } else if (this._ruler.active && this._dragging.button === 0
+          && this._ruler.line) {
+        // Ruler mode (docs/DESIGN.md §6.4.1): the grabbed measurement
+        // follows the cursor (no pan); the right button still pans.
+        const [lx, ly] = math.screenToL0(
+          this._transform, e.clientX - rect.left, e.clientY - rect.top);
+        this._ruler = rulerEvent(
+          this._ruler, { type: 'move', x: lx, y: ly }).state;
         this._requestDraw();
       } else {
         this._transform = math.panTransform(this._transform, dx, dy);
@@ -590,7 +623,15 @@ export class SlideView extends DOMWidgetView {
       } else if (d.moved) {
         this._scheduleSync();
       }
-      if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
+      if (!vd && this._ruler.active && d.button === 0 && this._transform) {
+        // Ruler mode (docs/DESIGN.md §6.4.1): a left drag has already
+        // moved the live line (keep it); a still click clears the
+        // measurement.
+        if (dist < CLICK_THRESHOLD_PX) {
+          this._ruler = rulerEvent(this._ruler, { type: 'clear' }).state;
+        }
+        this._requestDraw();
+      } else if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_DRAWING && this._transform) {
         // A still left click in drawing mode (docs/annotations.md):
         //  - near the selected feature's edge: insert a vertex at the
@@ -697,6 +738,12 @@ export class SlideView extends DOMWidgetView {
       this._setLocalStatus('Slide not open');
       return;
     }
+    if (entering && this._ruler.active) {
+      // The two canvas tools are mutually exclusive: the measurement is
+      // cleared when polygon drawing takes over (docs/DESIGN.md §6.4.1).
+      this._ruler = rulerEvent(this._ruler, { type: 'cancel' }).state;
+      this._setRulerModeUI(false);
+    }
     const { state, result } = polyEvent(this._poly, { type: 'toggle' });
     this._poly = state;
     this._setDrawModeUI(state.mode === MODE_DRAWING);
@@ -735,10 +782,58 @@ export class SlideView extends DOMWidgetView {
     this._annotateBtn.setAttribute('aria-pressed', String(active));
   }
 
+  // -------------------------------------------------- ruler measurement
+  // Toolbar **ruler** button (docs/DESIGN.md §6.4.1): enter/exit the
+  // measurement mode. Entering clears the live polygon draft (the two
+  // canvas tools are mutually exclusive); exiting clears the current
+  // measurement.
+  _toggleRulerMode() {
+    const entering = !this._ruler.active;
+    if (entering && !this.model.get('slide_open')) {
+      // R before the slide is open: no-op with a reason.
+      this._setLocalStatus('Slide not open');
+      return;
+    }
+    if (entering && this._poly.mode === MODE_DRAWING) {
+      const { state } = polyEvent(this._poly, { type: 'cancel' });
+      this._poly = state;
+      this._setDrawModeUI(false);
+    }
+    this._ruler = rulerEvent(this._ruler, { type: 'toggle' }).state;
+    this._setRulerModeUI(this._ruler.active);
+    this._setLocalStatus(this._ruler.active
+      ? 'Ruler: drag to measure — a still click clears, Esc exits'
+      : null);
+    this._requestDraw();
+  }
+
+  /** Esc in ruler mode (docs/DESIGN.md §6.4.1): clear the measurement
+   * and exit.
+   */
+  _exitRulerMode() {
+    if (!this._ruler.active) return;
+    this._ruler = rulerEvent(this._ruler, { type: 'cancel' }).state;
+    this._setRulerModeUI(false);
+    this._setLocalStatus('Ruler: measurement cleared');
+    this._requestDraw();
+  }
+
+  // The ruler mode's UI state (docs/DESIGN.md §6.4.1): the canvas's
+  // crosshair cursor class and the ruler button's pressed look
+  // (aria-pressed; the "on" style is shared with the annotate button).
+  _setRulerModeUI(active) {
+    this._canvas.classList.toggle('islide-ruler', active);
+    this._rulerBtn.setAttribute('aria-pressed', String(active));
+  }
+
   _toolbarAction(action) {
     this._clearLocalStatusIfIdle();
     if (action === 'annotate') {
       this._toggleDrawMode();
+      return;
+    }
+    if (action === 'ruler') {
+      this._toggleRulerMode();
       return;
     }
     if (action === 'del' || action === 'label' || action === 'color') {
@@ -1109,6 +1204,17 @@ export class SlideView extends DOMWidgetView {
             : -1;
         drawVertexHandles(actx, t, this._poly.draft, hl);
       }
+    }
+    // The live/last ruler measurement (docs/DESIGN.md §6.4.1): view-local
+    // (never synced), over everything — the label shows the length in µm
+    // (when the slide has mpp) and level-0 px.
+    if (this._ruler.active && this._ruler.line) {
+      const meta = this.model.get('meta');
+      drawRuler(actx, {
+        transform: t,
+        line: this._ruler.line,
+        mpp: meta ? meta.mpp : null,
+      });
     }
     // The click-to-insert hover preview (docs/annotations.md) — pointer on
     // the canvas (no gesture in flight), drawing mode, and a still click

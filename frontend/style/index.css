@@ -44,6 +44,11 @@
   cursor: crosshair;
 }
 
+/* Ruler mode: crosshair over the canvas (view.js toggles the class) */
+.islide-canvas.islide-ruler {
+  cursor: crosshair;
+}
+
 /* Annotation overlay: sits over the image canvas (below the minimap),
    never takes mouse input. */
 .islide-annotations {
@@ -110,7 +115,8 @@
 /* The annotate button shows the drawing mode (view.js): while a
    polygon is being drafted it is aria-pressed and reads as "on" —
    filled brand-color background, inverse-layout text. */
-.islide-btn[data-action="annotate"][aria-pressed="true"] {
+.islide-btn[data-action="annotate"][aria-pressed="true"],
+.islide-btn[data-action="ruler"][aria-pressed="true"] {
   background: var(--jp-brand-color1, #f57c00);
   color: var(--jp-inverse-layout-color0, #fff);
 }

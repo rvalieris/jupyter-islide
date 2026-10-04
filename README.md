@@ -126,6 +126,16 @@ v.annotations["features"]    # the appended polygon (fresh id, empty properties)
 ring = v.annotations["features"][-1]["geometry"]["coordinates"][0]
 ```
 
+**Measurement.** The **ruler** button in the toolbar (the underlined
+"r" hints the **R** alias; highlighted while active) switches to ruler
+mode: **left-drag** on the canvas draws a line whose length is labeled
+at its midpoint in micrometers and level-0 pixels (`200 µm · 400 px`; the
+µm come from the slide's mpp metadata, so slides without one show
+pixels only). The measurement is view-local — a new drag replaces the
+current line, a still **left click** clears it, **Esc** (or the button
+again) exits the mode, and wheel/minimap/pan keep the line reprojected
+under the live view. It never touches the annotation document.
+
 **Editing.** Existing shapes — imported or drawn — are editable in
 the view: in the idle mode a **left click** selects a shape (thick accent
 highlight; a miss deselects; pan/zoom/minimap keep the selection), and
@@ -239,6 +249,7 @@ frontend/      JS canvas view (JupyterLab extension; model + view + tests)
                  + vertex handles / set_vertex preview / segment hit-test
                  + add_vertex preview
   polydraw.js    polygon draw state machine + draft preview
+  ruler.js       ruler measurement state machine + measure-line rendering
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)
   labextension.js  widget-registry registration

@@ -10,4 +10,5 @@ export * from './tilemath.js';
 export { drawScene } from './compositor.js';
 export { drawAnnotations, hitTest } from './annotations.js';
 export * from './polydraw.js';
+export * from './ruler.js';
 export { SLIDE_MODEL_DEFAULTS, ISLIDE_MODULE_VERSION } from './defaults.js';
