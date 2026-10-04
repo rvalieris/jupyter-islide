@@ -7,9 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DASH_PATTERN, MODE_DRAWING, MODE_IDLE,
-  drawDraftPolygon, normalizeRing, polyDrawInit, polyEvent,
+  drawDraftPolygon, hitTestDraftVertex, normalizeRing, polyDrawInit,
+  polyEvent,
 } from '../polydraw.js';
-import { POINT_RADIUS, HALO_EXTRA } from '../annotations.js';
+import { POINT_RADIUS, HALO_EXTRA, VERTEX_PICK_RADIUS } from '../annotations.js';
 
 // screen transform: level-0 identity, 512x512 canvas -> l0 (x,y) => (x+256, y+256)
 const T = { cx: 0, cy: 0, zoom: 1, canvasW: 512, canvasH: 512 };
@@ -210,4 +211,49 @@ test('drawDraftPolygon: alpha applies to the whole draft', () => {
   });
   const alphas = ctx.ops.filter(([m]) => m === 'set:globalAlpha');
   assert.deepEqual(alphas, [['set:globalAlpha', 0.5]]);
+});
+
+// ------------------------------------------------------------ M6 (vertex editing)
+
+test('hitTestDraftVertex: within VERTEX_PICK_RADIUS of a draft vertex', () => {
+  const draft = [[0, 0], [30, 0]]; // l0 -> screen (256, 256) / (286, 256)
+  assert.equal(hitTestDraftVertex(draft, T, 256, 256), 0);
+  // the distance test is inclusive of the exact radius
+  assert.equal(hitTestDraftVertex(draft, T, 256 + VERTEX_PICK_RADIUS, 256), 0);
+  assert.equal(
+    hitTestDraftVertex(draft, T, 286 + VERTEX_PICK_RADIUS + 1, 256), null);
+  assert.equal(hitTestDraftVertex([], T, 256, 256), null);
+  assert.equal(hitTestDraftVertex(null, T, 256, 256), null);
+});
+
+test('move_vertex: moves the addressed draft vertex; others untouched', () => {
+  let s = polyEvent(polyDrawInit(), { type: 'toggle' }).state;
+  for (const p of TRI) s = polyEvent(s, { type: 'vertex', x: p[0], y: p[1] }).state;
+  const before = s.draft;
+  const { state, result } = polyEvent(s, { type: 'move_vertex', index: 1, x: 50, y: 40 });
+  assert.equal(result, null); // a move is not a commit
+  assert.deepEqual(state.draft, [[0, 0], [50, 40], [0, 100]]);
+  assert.equal(state.mode, MODE_DRAWING);
+  assert.deepEqual(before, TRI); // the input state is never mutated
+  // the moved draft is still a valid ring
+  assert.ok(normalizeRing(state.draft));
+});
+
+test('move_vertex: bad index or position is a no-op', () => {
+  let s = polyEvent(polyDrawInit(), { type: 'toggle' }).state;
+  s = polyEvent(s, { type: 'vertex', x: 0, y: 0 }).state;
+  const before = s;
+  const noops = [
+    { type: 'move_vertex', index: -1, x: 1, y: 1 },
+    { type: 'move_vertex', index: 5, x: 1, y: 1 },
+    { type: 'move_vertex', index: 1.5, x: 1, y: 1 },
+    { type: 'move_vertex', index: '0', x: 1, y: 1 },
+    { type: 'move_vertex', index: 0, x: NaN, y: 0 },
+    { type: 'move_vertex', index: 0, x: Infinity, y: 0 },
+    { type: 'move_vertex', index: 0, y: 0 }, // x missing
+  ];
+  for (const ev of noops) assert.equal(polyEvent(s, ev).state, before);
+  // outside drawing mode: a no-op
+  const idle = polyDrawInit();
+  assert.equal(polyEvent(idle, { type: 'move_vertex', index: 0, x: 1, y: 1 }).state, idle);
 });

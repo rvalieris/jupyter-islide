@@ -10,9 +10,10 @@ aN skipping used ids, duplicates a ValueError), properties passthrough
 (label/color/fill string-checked, the rest untouched), unit conversion
 (px default, um via mpp, before the degenerate checks), degenerate drops
 (Polygon, LineString, MultiPolygon islands, feature-level warning), the
-malformed-input ValueError contract, and the M4 pure edit commands
-(apply_edit: delete / set_label / set_color, unknown id -> None, malformed
-commands -> ValueError, input never mutated, idempotent over the document).
+malformed-input ValueError contract, and the pure edit commands
+(apply_edit: delete / set_label / set_color / set_vertex, unknown id ->
+None, malformed or refused commands -> ValueError, input never mutated,
+idempotent over the document).
 """
 from __future__ import annotations
 
@@ -634,5 +635,158 @@ class TestApplyEditMalformed:
             apply_edit({"features": "nope"}, {"op": "delete", "id": "a1"})
         with pytest.raises(ValueError):
             apply_edit(None, {"op": "delete", "id": "a1"})
+
+
+# ----------------------------- set_vertex (vertex editing, DESIGN.md §6.7)
+
+def _sv_doc():
+    """One feature of each vertex-capable geometry type, ids sv_*.
+
+    Canonical flat position order (the order a set_vertex `index`
+    addresses):
+      sv_p:   0           Point's single position
+      sv_mp:  0..3        MultiPoint positions
+      sv_ls:  0..1        LineString positions
+      sv_pg:  0..2 outer ring, 3..5 hole ring
+      sv_mpt: 0..2 island 1, 3..5 island 2
+    """
+    return fc(
+        feat(point(1, 2), fid="sv_p"),
+        feat({"type": "MultiPoint",
+              "coordinates": [[0, 0], [1, 0], [2, 0], [3, 0]]}, fid="sv_mp"),
+        feat({"type": "LineString", "coordinates": [[0, 0], [4, 0]]}, fid="sv_ls"),
+        feat({"type": "Polygon", "coordinates": [
+            [[0, 0], [10, 0], [10, 10]],
+            [[4, 4], [6, 4], [6, 6]],
+        ]}, fid="sv_pg"),
+        feat({"type": "MultiPolygon", "coordinates": [
+            [[[0, 0], [5, 0], [5, 5]]],
+            [[[20, 20], [25, 20], [25, 25]]],
+        ]}, fid="sv_mpt"),
+    )
+
+
+class TestApplyEditSetVertex:
+    def test_point_moves_its_single_position(self):
+        out = apply_edit(_sv_doc(),
+                        {"op": "set_vertex", "id": "sv_p",
+                         "index": 0, "x": 9, "y": 9})
+        assert out["features"][0]["geometry"] == point(9, 9)
+
+    def test_multipoint_moves_one_position_keeps_the_rest(self):
+        out = apply_edit(_sv_doc(),
+                        {"op": "set_vertex", "id": "sv_mp",
+                         "index": 2, "x": 7, "y": 8})
+        assert out["features"][1]["geometry"]["coordinates"] == [
+            [0, 0], [1, 0], [7, 8], [3, 0]
+        ]
+
+    def test_linestring_moves_an_endpoint(self):
+        out = apply_edit(_sv_doc(),
+                        {"op": "set_vertex", "id": "sv_ls",
+                         "index": 1, "x": 4, "y": 9})
+        assert out["features"][2]["geometry"]["coordinates"] == [[0, 0], [4, 9]]
+
+    def test_polygon_moves_a_hole_vertex_by_flat_index_across_rings(self):
+        # index 4 is the hole ring's second point (the outer ring takes 0..2)
+        out = apply_edit(_sv_doc(),
+                        {"op": "set_vertex", "id": "sv_pg",
+                         "index": 4, "x": 4, "y": 5})
+        rings = out["features"][3]["geometry"]["coordinates"]
+        assert rings[0] == [[0, 0], [10, 0], [10, 10]]  # outer untouched
+        assert rings[1] == [[4, 4], [4, 5], [6, 6]]
+
+    def test_multipolygon_moves_a_vertex_on_the_second_island(self):
+        # index 4 is island 2's ring second point (island 1 takes 0..2)
+        out = apply_edit(_sv_doc(),
+                        {"op": "set_vertex", "id": "sv_mpt",
+                         "index": 4, "x": 25, "y": 30})
+        islands = out["features"][4]["geometry"]["coordinates"]
+        assert islands[0] == [[[0, 0], [5, 0], [5, 5]]]  # island 1 untouched
+        assert islands[1][0][1] == [25, 30]
+
+    def test_move_preserves_id_and_properties(self):
+        doc = _sv_doc()
+        doc["features"][0]["properties"] = {"label": "nucleus"}
+        out = apply_edit(doc,
+                        {"op": "set_vertex", "id": "sv_p",
+                         "index": 0, "x": 3, "y": 4})
+        assert out["features"][0]["id"] == "sv_p"
+        assert out["features"][0]["properties"] == {"label": "nucleus"}
+
+    def test_input_is_never_mutated_and_other_features_kept(self):
+        doc = _sv_doc()
+        snapshot = copy.deepcopy(doc)
+        out = apply_edit(doc,
+                        {"op": "set_vertex", "id": "sv_pg",
+                         "index": 0, "x": 1, "y": 1})
+        assert doc == snapshot
+        assert out is not doc
+        assert [f["id"] for f in out["features"]] == [
+            "sv_p", "sv_mp", "sv_ls", "sv_pg", "sv_mpt"]
+        # untouched features are shared with the input (and shared
+        # geometry is shared by the edit result with the input)
+        assert out["features"][0] is doc["features"][0]
+        assert out["features"][3]["geometry"]["coordinates"][1] is \
+            doc["features"][3]["geometry"]["coordinates"][1]
+
+    def test_idempotent_over_the_document(self):
+        doc = _sv_doc()
+        cmd = {"op": "set_vertex", "id": "sv_pg", "index": 0, "x": 2, "y": 3}
+        once = apply_edit(doc, cmd)
+        twice = apply_edit(once, cmd)
+        assert once == twice
+
+    def test_unknown_id_is_none(self):
+        assert apply_edit(
+            _sv_doc(),
+            {"op": "set_vertex", "id": "nope", "index": 0, "x": 0, "y": 0},
+        ) is None
+
+    @pytest.mark.parametrize("index", [-1, 1, 3])  # sv_p has one position
+    def test_out_of_range_index_is_a_value_error(self, index):
+        with pytest.raises(ValueError, match="out of range"):
+            apply_edit(_sv_doc(),
+                      {"op": "set_vertex", "id": "sv_p",
+                       "index": index, "x": 0, "y": 0})
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            {"op": "set_vertex", "id": "sv_p"},  # missing index/x/y
+            {"op": "set_vertex", "id": "sv_p", "index": 0, "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": True, "x": 0, "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": 0.0, "x": 0, "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": "0", "x": 0, "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": 0,
+             "x": float("nan"), "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": 0,
+             "x": float("inf"), "y": 0},
+            {"op": "set_vertex", "id": "sv_p", "index": 0,
+             "x": "3", "y": 0},
+        ],
+    )
+    def test_malformed_set_vertex_is_a_value_error(self, cmd):
+        with pytest.raises(ValueError):
+            apply_edit(_sv_doc(), cmd)
+
+    def test_degenerate_moves_are_refused(self):
+        doc = _sv_doc()
+        # LineString: the endpoint onto the other end (zero length)
+        with pytest.raises(ValueError, match="degenerate"):
+            apply_edit(doc, {"op": "set_vertex", "id": "sv_ls",
+                             "index": 1, "x": 0, "y": 0})
+        # Polygon: an outer-ring vertex onto the first (zero area)
+        with pytest.raises(ValueError, match="degenerate"):
+            apply_edit(doc, {"op": "set_vertex", "id": "sv_pg",
+                             "index": 1, "x": 0, "y": 0})
+        # Polygon: a hole vertex onto the hole's first point (zero area)
+        with pytest.raises(ValueError, match="degenerate"):
+            apply_edit(doc, {"op": "set_vertex", "id": "sv_pg",
+                             "index": 5, "x": 4, "y": 4})
+        # MultiPolygon: an island's vertex onto its neighbour (zero area)
+        with pytest.raises(ValueError, match="degenerate"):
+            apply_edit(doc, {"op": "set_vertex", "id": "sv_mpt",
+                             "index": 4, "x": 20, "y": 20})
 
 

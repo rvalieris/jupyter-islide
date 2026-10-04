@@ -9,7 +9,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   drawAnnotations,
+  drawVertexHandles,
+  featurePositions,
   hitTest,
+  hitTestVertex,
+  withMovedVertex,
   STROKE_WIDTH,
   POINT_RADIUS,
   HALO_EXTRA,
@@ -17,6 +21,8 @@ import {
   LINE_HIT_TOLERANCE,
   SELECTED_COLOR,
   SELECTED_STROKE_WIDTH,
+  VERTEX_HANDLE_RADIUS,
+  VERTEX_PICK_RADIUS,
 } from '../annotations.js';
 
 function mockCtx() {
@@ -426,4 +432,140 @@ test('drawAnnotations: selectedId that matches nothing draws normally', () => {
   });
   assert.equal(arcs(ctx).length, 2); // halo + body only, no ring
   assert.equal(ctx.ops.filter(([m]) => m === 'stroke').length, 0);
+});
+
+// ------------------------------------------------------------ M6 (vertex editing)
+
+const PG_HOLE = {
+  type: 'Polygon',
+  coordinates: [
+    [[0, 0], [100, 0], [100, 100], [0, 100]],
+    [[20, 20], [40, 20], [40, 40], [20, 40]],
+  ],
+};
+const MPOLY = {
+  type: 'MultiPolygon',
+  coordinates: [
+    [[[0, 0], [100, 0], [100, 100]]],
+    [[[200, 200], [300, 200], [300, 300]]],
+  ],
+};
+
+test('featurePositions: the flat canonical order per geometry type', () => {
+  assert.deepEqual(featurePositions(feat(point(1, 2))), [[1, 2]]);
+  assert.deepEqual(
+    featurePositions(feat({ type: 'MultiPoint', coordinates: [[0, 0], [1, 1]] })),
+    [[0, 0], [1, 1]]);
+  assert.deepEqual(
+    featurePositions(feat({ type: 'LineString', coordinates: [[0, 0], [5, 5]] })),
+    [[0, 0], [5, 5]]);
+  // polygon: the outer ring, then the holes
+  assert.deepEqual(featurePositions(feat(PG_HOLE)), [
+    [0, 0], [100, 0], [100, 100], [0, 100],
+    [20, 20], [40, 20], [40, 40], [20, 40],
+  ]);
+  // multipolygon: the islands, in order
+  assert.deepEqual(featurePositions(feat(MPOLY)), [
+    [0, 0], [100, 0], [100, 100],
+    [200, 200], [300, 200], [300, 300],
+  ]);
+});
+
+test('featurePositions: undrawable features give []', () => {
+  assert.deepEqual(featurePositions({
+    type: 'Feature', geometry: { type: 'Point', coordinates: 'nope' },
+    properties: {},
+  }), []);
+  assert.deepEqual(featurePositions({ type: 'Feature', geometry: null, properties: {} }), []);
+  assert.deepEqual(featurePositions(null), []);
+  assert.deepEqual(featurePositions({}), []);
+});
+
+test('withMovedVertex: point and linestring; input untouched', () => {
+  const d = doc(
+    feat(point(1, 2), {}, 'p'),
+    feat({ type: 'LineString', coordinates: [[0, 0], [10, 0]] }, {}, 'l'));
+  const out = withMovedVertex(d, 'p', 0, 9, 9);
+  assert.deepEqual(out.features[0].geometry.coordinates, [9, 9]);
+  assert.equal(out.features[1], d.features[1]); // the other feature is shared
+  const out2 = withMovedVertex(d, 'l', 1, 10, 5);
+  assert.deepEqual(out2.features[1].geometry.coordinates, [[0, 0], [10, 5]]);
+  // the input document is never mutated
+  assert.deepEqual(d.features[0].geometry.coordinates, [1, 2]);
+  assert.deepEqual(d.features[1].geometry.coordinates, [[0, 0], [10, 0]]);
+});
+
+test('withMovedVertex: a polygon hole vertex via the flat index across rings', () => {
+  const d = doc(feat(PG_HOLE, {}, 'pg'));
+  const out = withMovedVertex(d, 'pg', 5, 30, 35);
+  const rings = out.features[0].geometry.coordinates;
+  assert.deepEqual(rings[0], [[0, 0], [100, 0], [100, 100], [0, 100]]);
+  // flat 5 = the hole's second position (flat 4 is its first)
+  assert.deepEqual(rings[1], [[20, 20], [30, 35], [40, 40], [20, 40]]);
+});
+
+test('withMovedVertex: multipolygon island regrouping keeps the shape', () => {
+  const d = doc(feat(MPOLY, {}, 'mp'));
+  const out = withMovedVertex(d, 'mp', 4, 250, 260);
+  const islands = out.features[0].geometry.coordinates;
+  assert.equal(islands.length, 2);
+  assert.deepEqual(islands[0], [[[0, 0], [100, 0], [100, 100]]]);
+  assert.deepEqual(islands[1], [[[200, 200], [250, 260], [300, 300]]]);
+});
+
+test('withMovedVertex: unknown id or index: the same document is returned', () => {
+  const d = doc(feat(point(1, 2), {}, 'p'), feat(PG_HOLE, {}, 'pg'));
+  assert.equal(withMovedVertex(d, 'nope', 0, 0, 0), d);
+  assert.equal(withMovedVertex(d, 'p', 1, 0, 0), d); // a point has one position
+  assert.equal(withMovedVertex(d, 'pg', 99, 0, 0), d); // out of range
+  assert.equal(withMovedVertex(d, 'pg', -1, 0, 0), d);
+  const bad = {}; // malformed document
+  assert.equal(withMovedVertex(bad, 'p', 0, 0, 0), bad);
+});
+
+test('hitTestVertex: within VERTEX_PICK_RADIUS, nearest first', () => {
+  // l0 (0,0)/(100,0) -> screen (256,256)/(356,256): far apart
+  const f = feat(
+    { type: 'LineString', coordinates: [[0, 0], [100, 0]] }, {}, 'l');
+  assert.equal(hitTestVertex(f, T, 256, 256), 0);
+  // the distance test is inclusive of the exact radius
+  assert.equal(hitTestVertex(f, T, 256 + VERTEX_PICK_RADIUS, 256), 0);
+  // beyond both radii: a miss
+  assert.equal(hitTestVertex(f, T, 266 + VERTEX_PICK_RADIUS + 1, 256), null);
+  // the second vertex hits at its own position
+  assert.equal(hitTestVertex(f, T, 256 + 100 + VERTEX_PICK_RADIUS, 256), 1);
+  // inside both radii (10 px apart): the nearer vertex wins
+  const near = feat(
+    { type: 'LineString', coordinates: [[0, 0], [10, 0]] }, {}, 'l2');
+  assert.equal(hitTestVertex(near, T, 256 + 8, 256), 1); // 8 from v0, 2 from v1
+  assert.equal(hitTestVertex(near, T, 256 + 2, 256), 0); // 2 from v0, 8 from v1
+  // a polygon vertex beyond the first ring (flat index 4 = hole vertex)
+  const pg = feat(PG_HOLE, {}, 'pg');
+  assert.equal(hitTestVertex(pg, T, 256 + 20, 256 + 20), 4);
+  assert.equal(hitTestVertex(pg, T, 256 + 20, 256 + 200), null);
+  // undrawable feature: never a hit
+  const bad = { type: 'Feature', geometry: null, properties: {} };
+  assert.equal(hitTestVertex(bad, T, 256, 256), null);
+});
+
+test('drawVertexHandles: one handle per position, the grab enlarged', () => {
+  const ctx = mockCtx();
+  drawVertexHandles(ctx, T, [[0, 0], [10, 0], [0, 10]], 1);
+  const a = arcs(ctx);
+  assert.equal(a.length, 3);
+  assert.deepEqual(a.map((o) => o[3]), [
+    VERTEX_HANDLE_RADIUS,
+    VERTEX_HANDLE_RADIUS + 1.5,
+    VERTEX_HANDLE_RADIUS,
+  ]);
+  assert.equal(ctx.state.strokeStyle, SELECTED_COLOR);
+  assert.deepEqual(a[0].slice(1, 3), [256, 256]); // l0 (0,0) under T
+  assert.equal(ctx.ops[0][0], 'save');
+  assert.equal(ctx.ops[ctx.ops.length - 1][0], 'restore');
+});
+
+test('drawVertexHandles: empty positions draw nothing', () => {
+  const ctx = mockCtx();
+  drawVertexHandles(ctx, T, [], -1);
+  assert.equal(ctx.ops.length, 0);
 });

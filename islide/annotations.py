@@ -389,8 +389,9 @@ def _path_length(pts: list[tuple[float, float]]) -> float:
 # M4 edit operations (DESIGN.md §6.5): the `annotation_edit` last-event
 # command is discriminated by `op`; the ops are idempotent over a
 # normalized document (a replayed `delete` finds no feature, the replayed
-# set ops store the same values).
-EDIT_OPS = ("delete", "set_label", "set_color")
+# set ops store the same values; a replayed `set_vertex` stores the same
+# position).
+EDIT_OPS = ("delete", "set_label", "set_color", "set_vertex")
 
 
 def apply_edit(doc: dict, cmd: Any) -> dict | None:
@@ -402,20 +403,34 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
         {"op": "set_label", "id": <str>, "label": <str | None>}
         {"op": "set_color", "id": <str>, "color": <str | None>,
          "fill": <str | None>}
+        {"op": "set_vertex", "id": <str>, "index": <int>, "x": <float>,
+         "y": <float>}
 
     Returns a **new** document, or ``None`` if ``id`` does not address a
     feature of ``doc`` (a stale id — the caller keeps the current state).
     ``set_label`` stores ``label`` (``""``/whitespace-only/``None`` = no
     label — the ``label`` key is dropped); ``set_color`` stores the
     ``color``/``fill`` pair (``None`` members are dropped — the M2
-    use-the-default convention: black stroke, transparent fill). The
+    use-the-default convention: black stroke, transparent fill).
+    ``set_vertex`` moves one position of the feature — the flat
+    ``index`` in the feature's canonical position order (a Point's single
+    position; a MultiPoint's / LineString's positions; a Polygon's rings
+    in order — outer first, then holes, positions within a ring; a
+    MultiPolygon's islands in order, rings within an island, positions
+    within a ring) — to level-0 px ``(x, y)`` (DESIGN.md §6.7); the moved
+    geometry must keep the document's degeneracy invariants (every ring
+    at or above the area threshold, a LineString at or above the length
+    threshold) — a move that degenerates the geometry raises
+    ``ValueError``. The
     canonical form has no ``None``-valued properties. The input is never
     mutated; the returned document shares
     geometry objects with it (the widget re-normalizes through
     ``parse_annotations`` on assignment). Raises ``ValueError`` on a
-    malformed command: unknown op, missing/empty/non-string ``id``, or a
+    malformed command: unknown op, missing/empty/non-string ``id``, a
     non-string ``label``/``color``/``fill`` (missing keys count as
-    malformed — the wire form always carries them).
+    malformed — the wire form always carries them), or ``set_vertex``
+    ``index``/``x``/``y`` that are not an int / finite numbers, or an
+    ``index`` that does not address a position of the feature.
     """
     if not isinstance(doc, dict) or not isinstance(doc.get("features"), list):
         raise ValueError("annotation document must be a FeatureCollection")
@@ -437,11 +452,171 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
         if "label" not in cmd:
             raise ValueError("set_label command needs a 'label' member")
         return _set_props(doc, idx, {"label": _edit_text(cmd["label"])})
-    # set_color
-    for key in ("color", "fill"):
-        if key not in cmd:
-            raise ValueError(f"set_color command needs a {key!r} member")
-    return _set_props(doc, idx, {"color": _edit_text(cmd["color"]), "fill": _edit_text(cmd["fill"])})
+    if op == "set_color":
+        for key in ("color", "fill"):
+            if key not in cmd:
+                raise ValueError(f"set_color command needs a {key!r} member")
+        return _set_props(doc, idx, {"color": _edit_text(cmd["color"]), "fill": _edit_text(cmd["fill"])})
+    # set_vertex
+    index = cmd.get("index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise ValueError(
+            f"set_vertex 'index' must be an integer, got {index!r}"
+        )
+    x = _vertex_number(cmd.get("x"), "x")
+    y = _vertex_number(cmd.get("y"), "y")
+    geom = doc["features"][idx]["geometry"]
+    count = _vertex_count(geom)
+    if not (0 <= index < count):
+        raise ValueError(
+            f"set_vertex 'index' {index} is out of range "
+            f"(the feature has {count} position{'s' if count != 1 else ''})"
+        )
+    moved = _move_vertex(geom, index, (x, y))
+    if moved is None:  # defensive: the count check above already covered it
+        raise ValueError(f"set_vertex 'index' {index} is out of range")
+    if _is_degenerate(moved):
+        raise ValueError(
+            "set_vertex would make the geometry degenerate "
+            "(a zero-area ring or a zero-length line)"
+        )
+    feature = dict(doc["features"][idx])
+    feature["geometry"] = moved
+    out = list(doc["features"])
+    out[idx] = feature
+    return {"type": "FeatureCollection", "features": out}
+
+
+def _vertex_number(v: Any, what: str) -> float:
+    """A ``set_vertex`` ``x``/``y`` member: a finite number (level-0 px)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError(
+            f"set_vertex '{what}' must be a number, got {type(v).__name__}"
+        )
+    if not math.isfinite(v):
+        raise ValueError(f"set_vertex '{what}' must be finite, got {v!r}")
+    return float(v)
+
+
+def _canonical_rings(geometry: dict) -> list | None:
+    """A polygon-family geometry's rings in canonical position order —
+    a Polygon's rings (outer first, then holes); a MultiPolygon's islands
+    in order, rings within each island. ``None`` for other geometry types
+    (and malformed coordinates)."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return None
+    if gtype == "Polygon":
+        return [r for r in coords if isinstance(r, list)]
+    if gtype == "MultiPolygon":
+        rings = []
+        for island in coords:
+            if isinstance(island, list):
+                rings.extend(r for r in island if isinstance(r, list))
+        return rings
+    return None
+
+
+def _vertex_count(geometry: dict) -> int:
+    """How many positions the feature has, in the canonical position order
+    that a ``set_vertex`` ``index`` addresses: a Point's single position;
+    a MultiPoint's / LineString's positions; a Polygon's ring positions
+    (rings in order, positions within a ring); a MultiPolygon's
+    island-then-ring positions."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return 0
+    if gtype == "Point":
+        return 1
+    if gtype in ("MultiPoint", "LineString"):
+        return len(coords)
+    rings = _canonical_rings(geometry)
+    return sum(len(r) for r in rings) if rings is not None else 0
+
+
+def _move_vertex(geometry: dict, index: int, point: tuple[float, float]) -> dict | None:
+    """The feature's geometry with the position at ``index`` (canonical
+    position order) replaced by ``point`` — a new geometry; the input is
+    never mutated. ``None`` if ``index`` does not address a position."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return None
+    if gtype == "Point":
+        if index != 0:
+            return None
+        return {**geometry, "coordinates": [point[0], point[1]]}
+    if gtype in ("MultiPoint", "LineString"):
+        if not (0 <= index < len(coords)):
+            return None
+        return {
+            **geometry,
+            "coordinates": [
+                [point[0], point[1]] if i == index else [p[0], p[1]]
+                for i, p in enumerate(coords)
+            ],
+        }
+    rings = _canonical_rings(geometry)
+    if rings is None:
+        return None
+    offset = 0
+    for ring in rings:
+        if offset <= index < offset + len(ring):
+            local = index - offset
+            new_ring = [
+                [point[0], point[1]] if j == local else [p[0], p[1]]
+                for j, p in enumerate(ring)
+            ]
+            if gtype == "Polygon":
+                return {
+                    **geometry,
+                    "coordinates": [new_ring if r is ring else r for r in coords],
+                }
+            return {
+                **geometry,
+                "coordinates": [
+                    [new_ring if r is ring else r for r in island]
+                    if isinstance(island, list) and ring in island
+                    else island
+                    for island in coords
+                ],
+            }
+        offset += len(ring)
+    return None
+
+
+def _is_degenerate(geometry: dict) -> bool:
+    """Whether the geometry breaks the document's degeneracy invariants:
+    a ring below the area threshold, or a LineString below the length
+    threshold (Points and MultiPoints cannot be degenerate)."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return False
+    if gtype == "Polygon":
+        return any(
+            _ring_area(r) < _DEGENERATE_AREA
+            for r in coords
+            if isinstance(r, list) and len(r) >= 3
+        )
+    if gtype == "MultiPolygon":
+        return any(
+            _ring_area(r) < _DEGENERATE_AREA
+            for island in coords
+            if isinstance(island, list)
+            for r in island
+            if isinstance(r, list) and len(r) >= 3
+        )
+    if gtype == "LineString":
+        pts = [
+            (p[0], p[1])
+            for p in coords
+            if isinstance(p, list) and len(p) >= 2
+        ]
+        return _path_length(pts) < _DEGENERATE_LENGTH
+    return False
 
 
 def _feature_index(doc: dict, fid: str) -> int | None:

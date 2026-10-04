@@ -21,10 +21,12 @@ export const SLIDE_MODEL_DEFAULTS = {
   // M3.5: the canonical annotation document (a GeoJSON FeatureCollection
   // in level-0 px; DESIGN.md §6.3). Rendered read-only by the JS view.
   annotations: { type: 'FeatureCollection', features: [] },
-  // M4: the last issued annotation edit command (JS -> Py last-event slot;
-  // DESIGN.md §6.5): {op: "delete" | "set_label" | "set_color", id, ...}
-  // or null (no command yet). The Python observer applies it to
-  // `annotations` and pushes the updated set.
+  // M4/M6: the last issued annotation edit command (JS -> Py last-event
+  // slot; DESIGN.md §6.5/§6.7): {op: "delete" | "set_label" | "set_color",
+  // id, ...} or {op: "set_vertex", id, index, x, y} (index: the feature's
+  // flat canonical position index, x/y level-0 px), or null (no command
+  // yet). The Python observer applies it to `annotations` and pushes the
+  // updated set.
   annotation_edit: null,
   status: '',
 };

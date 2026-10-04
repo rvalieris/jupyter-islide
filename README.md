@@ -3,7 +3,7 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M5** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
+Status: **M6** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
 (mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline. M5
 improves *feel*, not features: wide views are read as grid-anchored
 1024-px **chunks in center-first order** — the center chunk is pushed
@@ -16,7 +16,9 @@ canvas view also carries a GeoJSON **annotation document** overlay
 **hand-drawn polygons** (the **annotate** button or **A**, left-click the
 vertices, **A** to save) and supports **editing existing shapes**: click
 to select, then **del** / **label** / **color** in the toolbar (or the
-same Python API).
+same Python API), plus **dragging individual vertices** (M6) — the
+in-progress draft's while it's being drawn, and a selected saved
+feature's in either mode.
 
 ## Install
 
@@ -145,7 +147,8 @@ Esc cancels; labels render on lines/polygons too, at the first vertex) and
 **color** (stroke + fill pickers with a clear-fill checkbox; closing a
 picker commits the full `(color, fill)` pair). The **annotate** button
 toggles the M3 drawing mode (**A** stays the keyboard alias); entering
-drawing mode clears the selection. The view issues each edit as an
+drawing mode keeps the selection (M6: a selected feature's vertices stay
+grabbable while drawing). The view issues each edit as an
 `annotation_edit` command; Python applies it to the canonical document and
 pushes the whole updated set back, so `v.annotations` always reflects the
 edits. The same ops are available programmatically (ids from
@@ -158,9 +161,35 @@ v.set_annotation_color("a1", color="red", fill=None)  # None = default
 ```
 
 Unknown or stale ids are no-ops: the document is untouched and the status
-says `edit ignored:`. M4 has no geometry editing (move/resize/vertex), no
-multi-select, no hover/tooltips, and no undo — the reset paths are
-`clear_annotations()` or a re-import.
+says `edit ignored:`.
+
+**Vertex editing (M6).** Individual vertices are draggable: the
+in-progress draft's vertices while a polygon is being drawn (drawing
+mode), and a selected saved feature's vertices in either mode. Each
+vertex draws as a small white circle; a **left click** near a circle
+grabs the nearest one (within 8 px), and dragging moves the vertex —
+never the view (a still click on a vertex is a no-op). Dragging a saved
+feature's vertex updates the shape immediately (optimistic preview); on
+release the view commits the move as an `annotation_edit` command
+`set_vertex` (level-0 px). Python re-validates and pushes the updated
+document, so `v.annotations` always reflects the move; a move that would
+degenerate the geometry (a ring collapsing onto a point, a hole
+closing up, a line flattening) is refused — the status says
+`edit ignored: …` and the shape stays as it was. Same programmatic API
+(ids and indices from `v.annotations`):
+
+```python
+v.set_annotation_vertex("a1", 0, 1234, 567)   # move vertex #0 (level-0 px)
+```
+
+`index` is the feature's flat position index: `Point` has index 0;
+`MultiPoint` / `LineString` use coordinate order; `Polygon` uses ring
+order, then position within the ring; `MultiPolygon` uses island order,
+then ring order, then position within the ring.
+
+The viewer still has no per-shape move/resize, no multi-select, no
+hover/tooltips, and no undo — the reset paths are `clear_annotations()`
+or a re-import.
 
 **Custom slide types.** If your slide library exposes the same API as
 openslide (openslide-python's object-oriented API), pass an already-opened
@@ -190,7 +219,8 @@ islide/
   plan.py      viewport -> read plan: one region read, sliced into tiles,
                chunked into grid-anchored 1024-px blocks, center-first (M5)
   annotations.py  GeoJSON document -> canonical annotation document (pure)
-                 + apply_edit (M4: the pure delete/set_label/set_color ops)
+                 + apply_edit (M4/M6: the pure delete/set_label/set_color/
+                              set_vertex ops)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read per chunk, cropped)
@@ -202,6 +232,7 @@ frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   compositor.js  pure canvas scene drawing (per-level alpha, M5)
   blend.js       level cross-fade math (M5)
   annotations.js pure annotation overlay drawing + hit testing (M2/M4)
+                 + vertex handles / set_vertex preview (M6)
   polydraw.js    polygon draw state machine + draft preview (M3)
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)

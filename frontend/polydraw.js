@@ -14,6 +14,7 @@
 import * as math from './tilemath.js';
 import {
   DEFAULT_COLOR, STROKE_WIDTH, POINT_RADIUS, HALO_EXTRA,
+  VERTEX_PICK_RADIUS,
 } from './annotations.js';
 
 export const MODE_IDLE = 'idle';
@@ -76,12 +77,15 @@ export function polyDrawInit() {
 /**
  * Advance the drawing state machine by one event; returns `{state,
  * result}`.
- *
  * Events (all positions in level-0 px; the view converts them):
  *   { type: 'toggle' }           A: idle -> enter drawing; drawing -> save
  *                                (valid ring) or discard
  *   { type: 'cancel' }           Esc: discard the draft, exit
  *   { type: 'vertex', x, y }     a still left click: append a vertex
+ *   { type: 'move_vertex',      M6: a grabbed draft vertex follows the
+ *     index, x, y }              cursor (index: the draft's flat position
+ *                                index; a bad index or a non-finite
+ *                                position is a no-op)
  *
  * `state` is always `{mode, draft}` (a fresh object when anything changes —
  * the input is never mutated); `result` is
@@ -114,9 +118,50 @@ export function polyEvent(state, event) {
         result: null,
       };
     }
+    case 'move_vertex': {
+      if (state.mode !== MODE_DRAWING) return { state, result: null };
+      const x = event.x, y = event.y;
+      if (
+        !Number.isInteger(event.index) ||
+        event.index < 0 ||
+        event.index >= state.draft.length ||
+        typeof x !== 'number' || typeof y !== 'number' ||
+        !Number.isFinite(x) || !Number.isFinite(y)
+      ) {
+        return { state, result: null };
+      }
+      return {
+        state: {
+          mode: MODE_DRAWING,
+          draft: state.draft.map((p, j) => (j === event.index ? [x, y] : p)),
+        },
+        result: null,
+      };
+    }
     default:
       return { state, result: null };
   }
+}
+
+/**
+ * M6 (DESIGN.md §6.7): the flat index of the draft vertex within
+ * `VERTEX_PICK_RADIUS` screen px of the screen point (x, y) (the nearest
+ * first), or null (a miss). The view's pointerdown grabs it before any
+ * click/pan handling, so a press on a draft vertex never adds a new one.
+ */
+export function hitTestDraftVertex(draft, transform, x, y) {
+  const pts = Array.isArray(draft) ? draft : [];
+  let best = null;
+  let bestD2 = VERTEX_PICK_RADIUS * VERTEX_PICK_RADIUS;
+  pts.forEach(([px, py], i) => {
+    const [sx, sy] = math.l0ToScreen(transform, px, py);
+    const dx = x - sx, dy = y - sy;
+    if (dx * dx + dy * dy <= bestD2) {
+      bestD2 = dx * dx + dy * dy;
+      best = i;
+    }
+  });
+  return best;
 }
 
 /**

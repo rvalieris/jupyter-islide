@@ -24,6 +24,14 @@
  * `SELECTED_STROKE_WIDTH` (a selected point gets an accent ring around its
  * marker); `hitTest` is the pure screen-space counterpart of the draw.
  *
+ * M6 (DESIGN.md §6.7) vertex editing: `featurePositions` flattens a
+ * feature's positions in the canonical order a `set_vertex` `index`
+ * addresses (the JS twin of Python's apply_edit walk); `hitTestVertex`
+ * finds the grabbable position under a screen point; `withMovedVertex`
+ * previews a moved vertex locally (pure — Python stays the authority);
+ * `drawVertexHandles` draws the draggable handles (a selected feature's
+ * vertices, and a draft's vertices via the polydraw state).
+ *
  * Style constants are screen-space (CSS px) and do not scale with zoom:
  * the compositor draws the overlay after resetting the CTM (see view.js).
  */
@@ -42,6 +50,10 @@ export const SELECTED_COLOR = '#ff8c00';
 export const SELECTED_STROKE_WIDTH = 3;
 export const POINT_HIT_RADIUS = POINT_RADIUS + HALO_EXTRA + 2; // ~8 px
 export const LINE_HIT_TOLERANCE = 6;
+// M6 vertex editing (screen px): the vertex-handle grab radius and the
+// handle body radius (a grabbed handle draws 1.5 px larger).
+export const VERTEX_PICK_RADIUS = 8;
+export const VERTEX_HANDLE_RADIUS = 3;
 
 /**
  * Draw every feature of the annotation document under `transform` onto
@@ -306,6 +318,190 @@ function ringsOf(g) {
 
 function isNumber(v) {
   return typeof v === 'number' && Number.isFinite(v);
+}
+
+// --------------------------------------------------------------- M6
+
+/**
+ * The positions of a feature in the canonical flat order a `set_vertex`
+ * `index` addresses (DESIGN.md §6.7, the JS twin of Python's apply_edit
+ * walk): Point's single position; MultiPoint/LineString in coordinate
+ * order; Polygon's rings in order (outer first), positions within each
+ * ring; MultiPolygon's islands in order, rings within each island,
+ * positions within each ring. `[]` when the feature has no drawable
+ * positions.
+ */
+export function featurePositions(feature) {
+  const g = feature && feature.geometry;
+  if (!g || typeof g !== 'object' || !Array.isArray(g.coordinates)) return [];
+  const t = g.type;
+  if (t === 'Point') {
+    return isPosition(g.coordinates) ? [g.coordinates] : [];
+  }
+  if (t === 'MultiPoint' || t === 'LineString') {
+    return g.coordinates.length && g.coordinates.every(isPosition)
+      ? g.coordinates
+      : [];
+  }
+  if (t === 'Polygon' || t === 'MultiPolygon') {
+    const out = [];
+    if (t === 'Polygon') {
+      for (const ring of g.coordinates) {
+        if (!isRing(ring)) return [];
+        for (const p of ring) out.push(p);
+      }
+    } else {
+      for (const island of g.coordinates) {
+        if (!Array.isArray(island)) return [];
+        for (const ring of island) {
+          if (!isRing(ring)) return [];
+          for (const p of ring) out.push(p);
+        }
+      }
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * A new document with one vertex of the feature `id` moved to (x, y) —
+ * the geometry twin of Python's `set_vertex` (same canonical flat index
+ * order). Pure: the input is never mutated and the same document is
+ * returned when the feature or the index does not exist (nothing to
+ * preview).
+ */
+export function withMovedVertex(annotations, id, index, x, y) {
+  const doc = annotations;
+  if (!doc || !Array.isArray(doc.features)) return doc;
+  const i = doc.features.findIndex((f) => f && f.id === id);
+  if (i < 0) return doc;
+  const f = doc.features[i];
+  const g = f.geometry;
+  if (!g || typeof g !== 'object' || !Array.isArray(g.coordinates)) return doc;
+  let newGeom = null;
+  if (g.type === 'Point') {
+    if (index === 0) newGeom = { ...g, coordinates: [x, y] };
+  } else if (g.type === 'MultiPoint' || g.type === 'LineString') {
+    if (
+      Number.isInteger(index) &&
+      index >= 0 &&
+      index < g.coordinates.length
+    ) {
+      newGeom = {
+        ...g,
+        coordinates: g.coordinates.map((p, j) =>
+          j === index ? [x, y] : [p[0], p[1]]),
+      };
+    }
+  } else {
+    newGeom = movedRingsGeometry(g, index, x, y);
+  }
+  if (!newGeom) return doc;
+  const features = doc.features.slice();
+  features[i] = { ...f, geometry: newGeom };
+  return { ...doc, features };
+}
+
+/**
+ * A Polygon/MultiPolygon's new geometry with one position replaced (rings
+ * walked in canonical order, islands regrouped for a MultiPolygon), or
+ * null when `index` does not address a position.
+ */
+function movedRingsGeometry(g, index, x, y) {
+  const rings = [];
+  if (!Array.isArray(g.coordinates)) return null;
+  if (g.type === 'Polygon') {
+    for (const ring of g.coordinates) {
+      if (!Array.isArray(ring)) return null;
+      rings.push(ring);
+    }
+  } else {
+    for (const island of g.coordinates) {
+      if (!Array.isArray(island)) return null;
+      for (const ring of island) {
+        if (!Array.isArray(ring)) return null;
+        rings.push(ring);
+      }
+    }
+  }
+  let off = 0;
+  for (let r = 0; r < rings.length; r++) {
+    if (
+      Number.isInteger(index) &&
+      index >= off &&
+      index < off + rings[r].length
+    ) {
+      const newRings = rings.map((ring, ri) =>
+        ri === r
+          ? ring.map((p, j) => (j === index - off ? [x, y] : [p[0], p[1]]))
+          : ring);
+      if (g.type === 'Polygon') return { ...g, coordinates: newRings };
+      const coords = [];
+      let k = 0;
+      for (const island of g.coordinates) {
+        const n = island.length;
+        coords.push(newRings.slice(k, k + n));
+        k += n;
+      }
+      return { ...g, coordinates: coords };
+    }
+    off += rings[r].length;
+  }
+  return null;
+}
+
+/**
+ * The flat index of the feature position within `VERTEX_PICK_RADIUS`
+ * screen px of the screen point (x, y) (the nearest first), or null
+ * (a miss). Pure.
+ */
+export function hitTestVertex(feature, transform, x, y) {
+  const positions = featurePositions(feature);
+  let best = null;
+  let bestD2 = VERTEX_PICK_RADIUS * VERTEX_PICK_RADIUS;
+  positions.forEach(([px, py], i) => {
+    const [sx, sy] = math.l0ToScreen(transform, px, py);
+    const d2 = screenDist2(sx, sy, x, y);
+    if (d2 <= bestD2) {
+      bestD2 = d2;
+      best = i;
+    }
+  });
+  return best;
+}
+
+/**
+ * The draggable vertex handles (DESIGN.md §6.7): a small white circle
+ * with an accent stroke at each position (screen-constant, drawn on the
+ * annotation overlay after the features so the handles stay grabbable
+ * over the shapes). `highlightIndex` (a grabbed vertex) draws a slightly
+ * larger handle.
+ */
+export function drawVertexHandles(
+  ctx,
+  transform,
+  positions,
+  highlightIndex = -1,
+) {
+  if (!Array.isArray(positions) || positions.length === 0) return;
+  ctx.save();
+  for (let i = 0; i < positions.length; i++) {
+    const [px, py] = positions[i];
+    const [sx, sy] = math.l0ToScreen(transform, px, py);
+    ctx.beginPath();
+    ctx.arc(
+      sx, sy,
+      i === highlightIndex ? VERTEX_HANDLE_RADIUS + 1.5 : VERTEX_HANDLE_RADIUS,
+      0, 2 * Math.PI,
+    );
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = SELECTED_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function isPosition(p) {

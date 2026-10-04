@@ -18,9 +18,12 @@ import * as blend from './blend.js';
 import { drawScene, drawOverlay } from './compositor.js';
 import {
   CLICK_THRESHOLD_PX, MODE_DRAWING, MODE_IDLE, drawDraftPolygon,
-  polyDrawInit, polyEvent,
+  hitTestDraftVertex, polyDrawInit, polyEvent,
 } from './polydraw.js';
-import { drawAnnotations, hitTest } from './annotations.js';
+import {
+  drawAnnotations, drawVertexHandles, featurePositions, hitTest,
+  hitTestVertex, withMovedVertex,
+} from './annotations.js';
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
@@ -48,6 +51,15 @@ export class SlideView extends DOMWidgetView {
     // M3 polygon drawing (DESIGN.md §6.4): local drawing state (never
     // synced); `last_polygon` is the only JS->Py write.
     this._poly = polyDrawInit();
+    // M6 vertex editing (DESIGN.md §6.7): `_vertexDrag` is the grabbed
+    // vertex (null when no handle was pressed): {kind: 'draft' | 'feature',
+    // id? (feature only), index}; `_vertexMove` is the live local preview
+    // of a dragged saved-feature vertex. It is kept after the release
+    // commit (drawing from the pushed set would flash the old position):
+    // cleared by the `annotations` push (accepted move) or by the
+    // `edit ignored` status (refused move — no push comes).
+    this._vertexDrag = null;
+    this._vertexMove = null;
     this._localStatus = null; // view-local status line, overrides the trait
 
     // Must exist before _buildDom(): that is where observe(this._canvas)
@@ -240,6 +252,15 @@ export class SlideView extends DOMWidgetView {
   }
 
   _onStatusChange() {
+    // M6: a refused vertex move (`edit ignored: ...`) leaves the pushed
+    // document unchanged and pushes nothing — drop the pending preview
+    // so the drawn document and the handles agree again (the accepted
+    // path is cleared by the `annotations` push instead).
+    if (this._vertexMove !== null
+        && String(this.model.get('status')).startsWith('edit ignored')) {
+      this._vertexMove = null;
+      this._requestDraw();
+    }
     this._updateStatus();
   }
 
@@ -252,9 +273,20 @@ export class SlideView extends DOMWidgetView {
   /** Any annotations push re-validates the M4 selection: a selected id
    * that is no longer in the set (clear_annotations(), a set_annotations()
    * replace, a delete round-trip) clears it; the del/label/color buttons
-   * track the selection either way.
+   * track the selection either way. It also drops the M6 pending vertex-move
+   * preview: the pushed document (an accepted set_vertex, a
+   * set_annotations() replace, ...) is what gets drawn from now on. (A
+   * refused move pushes nothing; its `edit ignored` status clears the
+   * preview instead — see _onStatusChange.)
    */
   _onAnnotationsChange() {
+    // Drop the M6 pending vertex-move preview — unless a vertex drag is
+    // live right now, where `_vertexMove` is that drag's *live* preview and
+    // the arriving push is from an earlier commit (keep the live one; it
+    // is retired by its own round-trip when this drag releases).
+    if (this._vertexDrag === null) {
+      this._vertexMove = null;
+    }
     if (this._selectedId !== null) {
       const doc = this.model.get('annotations');
       const features = doc && Array.isArray(doc.features) ? doc.features : [];
@@ -423,6 +455,10 @@ export class SlideView extends DOMWidgetView {
         button: e.button,
         moved: false,
       };
+      // M6: a press on a vertex handle grabs the vertex (DESIGN.md §6.7):
+      // the drag moves the vertex, never pans, and the still-click on
+      // release neither adds a draft vertex nor re-selects.
+      this._vertexDrag = this._grabVertex(e);
     });
     this._canvas.addEventListener('pointermove', (e) => {
       const rect = this._canvas.getBoundingClientRect();
@@ -439,25 +475,78 @@ export class SlideView extends DOMWidgetView {
       this._dragging.x = e.clientX;
       this._dragging.y = e.clientY;
       this._dragging.moved = true;
-      this._transform = math.panTransform(this._transform, dx, dy);
-      this._requestDraw();
+      if (this._vertexDrag) {
+        // M6: the grabbed vertex follows the cursor (no pan).
+        const [lx, ly] = math.screenToL0(
+          this._transform, e.clientX - rect.left, e.clientY - rect.top);
+        if (this._vertexDrag.kind === 'draft') {
+          this._poly = polyEvent(this._poly, {
+            type: 'move_vertex',
+            index: this._vertexDrag.index, x: lx, y: ly,
+          }).state;
+        } else {
+          // Live preview over the saved document; Python stays the
+          // authority (release commits `set_vertex`).
+          this._vertexMove = {
+            id: this._vertexDrag.id,
+            index: this._vertexDrag.index, x: lx, y: ly,
+          };
+        }
+        this._requestDraw();
+      } else {
+        this._transform = math.panTransform(this._transform, dx, dy);
+        this._requestDraw();
+      }
     });
     const endDrag = (e) => {
       if (!this._dragging) return;
       const d = this._dragging;
       this._dragging = null;
+      const vd = this._vertexDrag;
+      this._vertexDrag = null;
       const dist = Math.hypot(e.clientX - d.sx, e.clientY - d.sy);
-      if (d.moved) this._scheduleSync();
-      if (dist < CLICK_THRESHOLD_PX && d.button === 0
+      if (vd) {
+        // M6: the gesture started on a vertex handle (DESIGN.md §6.7):
+        // no pan happened, and the still-click release neither adds a
+        // draft vertex nor re-selects.
+        if (vd.kind === 'feature' && d.moved && this._vertexMove) {
+          // Commit the move: JS->Py last-event slot, Python re-validates
+          // (a degenerate move is refused, the document unchanged) and
+          // pushes the new document. `_vertexMove` stays up in the
+          // meantime — the pushed set still carries the pre-move position,
+          // and clearing it here would draw the shape at its old place for
+          // a few frames. The round-trip resolves it: the `annotations`
+          // push (accepted) or the `edit ignored` status (refused).
+          this.model.set('annotation_edit', {
+            op: 'set_vertex', id: vd.id,
+            index: vd.index, x: this._vertexMove.x, y: this._vertexMove.y,
+          });
+          this.model.save();
+        }
+        // No else-clear: a still click (`!d.moved`) or a draft drag never
+        // touched `_vertexMove` — if it is non-null here it is a previous
+        // drag's still-pending preview, and only the round-trip (push or
+        // `edit ignored` status) may retire it.
+        this._requestDraw();
+      } else if (d.moved) {
+        this._scheduleSync();
+      }
+      if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_DRAWING && this._transform) {
         // A still left click in drawing mode: append the cursor's slide
         // position (unclamped level-0 px) as the next draft vertex.
+        // M6: the selection goes with the new draft (its first vertex
+        // supersedes it; later vertices are no-ops).
+        if (this._selectedId !== null) {
+          this._selectedId = null;
+          this._updateAnnotationButtons();
+        }
         const rect = this._canvas.getBoundingClientRect();
         const [x, y] = math.screenToL0(
           this._transform, e.clientX - rect.left, e.clientY - rect.top);
         this._poly = polyEvent(this._poly, { type: 'vertex', x, y }).state;
         this._requestDraw();
-      } else if (dist < CLICK_THRESHOLD_PX && d.button === 0
+      } else if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_IDLE && this._transform) {
         // M4: a still left click in idle mode selects the topmost
         // annotation under the cursor (a miss deselects).
@@ -530,12 +619,10 @@ export class SlideView extends DOMWidgetView {
     this._canvas.classList.toggle('islide-drawing', state.mode === MODE_DRAWING);
     this._annotateBtn.setAttribute(
       'aria-pressed', String(state.mode === MODE_DRAWING));
-    if (state.mode === MODE_DRAWING) {
-      // M4: a click in drawing mode is a vertex — the selection goes with
-      // it.
-      this._selectedId = null;
-      this._updateAnnotationButtons();
-    }
+    // M6: the selection is preserved across the mode toggle: in drawing
+    // mode the selected feature's vertex handles stay up, so a selected
+    // annotation can be entered-annotate -> drag-vertex edited without
+    // re-selecting (the first draft vertex still supersedes it).
     if (result && result.op === 'save') {
       // JS->Py last-event wire (DESIGN.md §6.4): open ring, level-0 px,
       // unclamped. Python normalizes, appends, and reports via `status`.
@@ -596,6 +683,30 @@ export class SlideView extends DOMWidgetView {
     const doc = this.model.get('annotations');
     const features = doc && Array.isArray(doc.features) ? doc.features : [];
     return features.find((f) => f && f.id === this._selectedId) || null;
+  }
+
+  /**
+   * M6 (DESIGN.md §6.7): the vertex handle pressed at pointerdown —
+   * {kind: 'draft' | 'feature', id? (feature only), index} or null.
+   * Draft vertices grab in drawing mode (before the selected feature's,
+   * since a press can sit on both); the selected feature's vertices grab
+   * in both modes (that is what makes a saved annotation draggable).
+   */
+  _grabVertex(e) {
+    if (e.button !== 0 || !this._transform) return null;
+    const rect = this._canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    if (this._poly.mode === MODE_DRAWING && this._poly.draft.length) {
+      const i = hitTestDraftVertex(this._poly.draft, this._transform, x, y);
+      if (i !== null) return { kind: 'draft', index: i };
+    }
+    const f = this._selectedFeature();
+    if (f) {
+      const i = hitTestVertex(f, this._transform, x, y);
+      if (i !== null) return { kind: 'feature', id: f.id, index: i };
+    }
+    return null;
   }
 
   _updateAnnotationButtons() {
@@ -812,12 +923,38 @@ export class SlideView extends DOMWidgetView {
     const actx = c.getContext('2d');
     actx.setTransform(dpr, 0, 0, dpr, 0, 0);
     actx.clearRect(0, 0, w, h);
+    // M6: the live vertex-move preview (a saved-feature drag in flight);
+    // cleared on commit and on any annotations push.
+    const rawDoc = this.model.get('annotations') || {};
+    const doc = this._vertexMove
+      ? withMovedVertex(
+          rawDoc, this._vertexMove.id, this._vertexMove.index,
+          this._vertexMove.x, this._vertexMove.y)
+      : rawDoc;
     drawAnnotations(actx, {
       transform: t,
-      annotations: this.model.get('annotations') || {},
+      annotations: doc,
       alpha: this._annotAlpha,
       selectedId: this._selectedId,
     });
+    // M6 (DESIGN.md §6.7): the draggable vertex handles, on top of the
+    // shapes: the selected feature's vertices (both modes — a still click
+    // grabs, a drag commits `set_vertex`) and, while drawing, the draft's
+    // vertices (a still click grabs, a drag moves the draft vertex; a
+    // still click on a handle never adds a new draft vertex).
+    if (this._selectedId !== null) {
+      const f = (Array.isArray(doc.features) ? doc.features : [])
+        .find((f) => f && f.id === this._selectedId);
+      if (f) {
+        const hl =
+          this._vertexDrag &&
+          this._vertexDrag.kind === 'feature' &&
+          this._vertexDrag.id === f.id
+            ? this._vertexDrag.index
+            : -1;
+        drawVertexHandles(actx, t, featurePositions(f), hl);
+      }
+    }
     // M3: the in-progress polygon draft, on top of the imported features,
     // under the same alpha slider (DESIGN.md §6.4).
     if (this._poly.mode === MODE_DRAWING) {
@@ -827,6 +964,13 @@ export class SlideView extends DOMWidgetView {
         cursor: this._cursor,
         alpha: this._annotAlpha,
       });
+      if (this._poly.draft.length) {
+        const hl =
+          this._vertexDrag && this._vertexDrag.kind === 'draft'
+            ? this._vertexDrag.index
+            : -1;
+        drawVertexHandles(actx, t, this._poly.draft, hl);
+      }
     }
   }
 

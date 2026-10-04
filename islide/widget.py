@@ -167,8 +167,9 @@ class SlideViewer(widgets.DOMWidget):
       the tiles. Headless, the viewport is re-based directly.
     * M4: ``annotation_edit`` (JS->Py last-event slot, DESIGN.md §6.5)
       carries one view edit command (``delete`` / ``set_label`` /
-      ``set_color``); the Python observer applies it with the pure
-      ``apply_edit`` and pushes the updated ``annotations`` set.
+      ``set_color`` / ``set_vertex``); the Python observer applies it
+      with the pure ``apply_edit`` and pushes the updated ``annotations``
+      set.
     """
 
     # -- widget identity (must match the JS module registered by the
@@ -223,12 +224,13 @@ class SlideViewer(widgets.DOMWidget):
     # canonical document.
     annotations = Dict(default_value=_EMPTY_ANNOTATION_DOC).tag(sync=True)
     # M4: the last issued annotation edit command (JS -> Py): a
-    # {"op": "delete" | "set_label" | "set_color", "id", ...} object or
-    # None (no command yet; DESIGN.md §6.5). The Python observer applies
-    # it to `annotations` (pure apply_edit) and pushes the updated set;
-    # an unknown/stale id leaves the set untouched (a status note
-    # instead). Last-event slot: re-attach replays it, and every op is
-    # idempotent over the pushed set, so the replay is a harmless no-op.
+    # {"op": "delete" | "set_label" | "set_color" | "set_vertex",
+    # "id", ...} object or None (no command yet; DESIGN.md §6.5). The
+    # Python observer applies it to `annotations` (pure apply_edit) and
+    # pushes the updated set; an unknown/stale id leaves the set untouched
+    # (a status note instead). Last-event slot: re-attach replays it, and
+    # every op is idempotent over the pushed set, so the replay is a
+    # harmless no-op.
     annotation_edit = Dict(default_value=None, allow_none=True).tag(sync=True)
     status = Unicode("").tag(sync=True)
 
@@ -645,6 +647,25 @@ class SlideViewer(widgets.DOMWidget):
             "op": "set_color", "id": feature_id, "color": color, "fill": fill,
         }
 
+    def set_annotation_vertex(
+        self, feature_id: str, index: int, x: float, y: float
+    ) -> None:
+        """Move one position of the annotation with the given id (DESIGN.md
+        §6.7) — the same edit a vertex drag in the view issues: the
+        position at flat ``index`` in the feature's canonical position
+        order (a Point's single position; a MultiPoint's / LineString's
+        positions; a Polygon's rings in order — outer first, then holes,
+        positions within a ring; a MultiPolygon's islands in order, rings
+        within an island, positions within a ring) goes to level-0 px
+        ``(x, y)``. An id that does not address a feature of the current
+        set is ignored (the status reports it); an out-of-range ``index``
+        or a move that would degenerate the geometry is refused (the set
+        is unchanged)."""
+        self.annotation_edit = {
+            "op": "set_vertex", "id": feature_id,
+            "index": int(index), "x": float(x), "y": float(y),
+        }
+
     # --------------------------------------- M3: drawn polygons (JS -> Py)
     # (the M4 edit-command observer is registered with the M3 one above;
     # both apply to `annotations` and push the updated set)
@@ -713,8 +734,11 @@ class SlideViewer(widgets.DOMWidget):
         try:
             doc = apply_edit(self.annotations, cmd)
         except ValueError as e:
+            # A malformed wire payload, or a vertex move Python refused
+            # (bad index, non-finite position, or the move would
+            # degenerate the geometry) — warn, keep state, and say so.
             warnings.warn(f"islide: ignoring annotation edit: {e}", UserWarning)
-            self.status = "edit ignored: malformed command"
+            self.status = f"edit ignored: {e}"
             return
         if doc is None:
             self.status = "edit ignored: unknown annotation id"
@@ -724,5 +748,9 @@ class SlideViewer(widgets.DOMWidget):
         if cmd["op"] == "delete":
             self.status = f"deleted #{fid}"
         else:
-            what = "label" if cmd["op"] == "set_label" else "color"
+            what = {
+                "set_label": "label",
+                "set_color": "color",
+                "set_vertex": "vertex",
+            }[cmd["op"]]
             self.status = f"edited #{fid} ({what})"
