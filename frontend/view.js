@@ -21,8 +21,9 @@ import {
   hitTestDraftVertex, polyDrawInit, polyEvent,
 } from './polydraw.js';
 import {
-  drawAnnotations, drawVertexHandles, featurePositions, hitTest,
-  hitTestVertex, withMovedVertex,
+  addedVertexIndex, drawAnnotations, drawInsertPreview, drawVertexHandles,
+  featurePositions, hitTest, hitTestSegment, hitTestVertex, withAddedVertex,
+  withMovedVertex,
 } from './annotations.js';
 import './style/index.css';
 
@@ -54,12 +55,17 @@ export class SlideView extends DOMWidgetView {
     // M6 vertex editing (DESIGN.md §6.7): `_vertexDrag` is the grabbed
     // vertex (null when no handle was pressed): {kind: 'draft' | 'feature',
     // id? (feature only), index}; `_vertexMove` is the live local preview
-    // of a dragged saved-feature vertex. It is kept after the release
-    // commit (drawing from the pushed set would flash the old position):
-    // cleared by the `annotations` push (accepted move) or by the
-    // `edit ignored` status (refused move — no push comes).
+    // of a dragged saved-feature vertex; `_vertexInsert` is the pending
+    // `add_vertex` commit (a click on the selected feature's edge):
+    // {id, index (flat segment), x, y} in pushed-document terms. The
+    // previews are kept after the release commit (drawing from the pushed
+    // set would flash the old shape): cleared by the `annotations` push
+    // (accepted edit) or by the `edit ignored` status (refused edit — no
+    // push comes), never mid-drag (the push/status is from an earlier
+    // commit then).
     this._vertexDrag = null;
     this._vertexMove = null;
+    this._vertexInsert = null;
     this._localStatus = null; // view-local status line, overrides the trait
 
     // Must exist before _buildDom(): that is where observe(this._canvas)
@@ -252,14 +258,36 @@ export class SlideView extends DOMWidgetView {
   }
 
   _onStatusChange() {
-    // M6: a refused vertex move (`edit ignored: ...`) leaves the pushed
-    // document unchanged and pushes nothing — drop the pending preview
-    // so the drawn document and the handles agree again (the accepted
-    // path is cleared by the `annotations` push instead).
-    if (this._vertexMove !== null
-        && String(this.model.get('status')).startsWith('edit ignored')) {
-      this._vertexMove = null;
-      this._requestDraw();
+    // M6: a refused vertex edit (`edit ignored: ...`) leaves the pushed
+    // document unchanged and pushes nothing — drop that edit's pending
+    // preview so the drawn document and the handles agree again (the
+    // accepted path is cleared by the `annotations` push instead).
+    // Only when no vertex drag is live: mid-drag, the status is from an
+    // earlier commit, not the live drag.
+    const status = String(this.model.get('status'));
+    if (this._vertexDrag === null && status.startsWith('edit ignored: ')) {
+      const why = status.slice('edit ignored: '.length);
+      let cleared = false;
+      if (why === 'unknown annotation id') {
+        // The feature is gone from the pushed set: any pending preview
+        // for it is stale.
+        if (this._vertexMove !== null || this._vertexInsert !== null) {
+          this._vertexMove = null;
+          this._vertexInsert = null;
+          cleared = true;
+        }
+      } else if (why.startsWith('set_vertex')) {
+        if (this._vertexMove !== null) {
+          this._vertexMove = null;
+          cleared = true;
+        }
+      } else if (why.startsWith('add_vertex')) {
+        if (this._vertexInsert !== null) {
+          this._vertexInsert = null;
+          cleared = true;
+        }
+      }
+      if (cleared) this._requestDraw();
     }
     this._updateStatus();
   }
@@ -273,19 +301,21 @@ export class SlideView extends DOMWidgetView {
   /** Any annotations push re-validates the M4 selection: a selected id
    * that is no longer in the set (clear_annotations(), a set_annotations()
    * replace, a delete round-trip) clears it; the del/label/color buttons
-   * track the selection either way. It also drops the M6 pending vertex-move
-   * preview: the pushed document (an accepted set_vertex, a
+   * track the selection either way. It also retires the M6 pending vertex
+   * previews: the pushed document (an accepted set_vertex / add_vertex, a
    * set_annotations() replace, ...) is what gets drawn from now on. (A
-   * refused move pushes nothing; its `edit ignored` status clears the
+   * refused edit pushes nothing; its `edit ignored` status retires the
    * preview instead — see _onStatusChange.)
    */
   _onAnnotationsChange() {
-    // Drop the M6 pending vertex-move preview — unless a vertex drag is
-    // live right now, where `_vertexMove` is that drag's *live* preview and
-    // the arriving push is from an earlier commit (keep the live one; it
-    // is retired by its own round-trip when this drag releases).
+    // Retire the M6 pending vertex previews — unless a vertex drag is live
+    // right now, where `_vertexMove` / `_vertexInsert` are that drag's
+    // *live* previews and the arriving push is from an earlier commit
+    // (keep the live ones; the round-trip that retires them is the one
+    // the live drag is in — see the release logic in endDrag).
     if (this._vertexDrag === null) {
       this._vertexMove = null;
+      this._vertexInsert = null;
     }
     if (this._selectedId !== null) {
       const doc = this.model.get('annotations');
@@ -517,9 +547,38 @@ export class SlideView extends DOMWidgetView {
           // and clearing it here would draw the shape at its old place for
           // a few frames. The round-trip resolves it: the `annotations`
           // push (accepted) or the `edit ignored` status (refused).
+          //
+          // Exception: the dragged vertex is the not-yet-pushed vertex of
+          // a pending `add_vertex` (a click on the edge, then a drag
+          // before the round-trip landed). A `set_vertex` there would
+          // address a position Python does not have yet — re-issue the
+          // insert at the final dragged position instead. (The replay
+          // no-op makes this harmless when the final position equals the
+          // committed one; when the vertex was actually dragged, the
+          // kernel applies both inserts in order — a rare race (drag
+          // within the round-trip window) that leaves the original click
+          // point as an extra vertex of a still valid document.)
+          let op = 'set_vertex';
+          let index = vd.index;
+          const ins = this._vertexInsert;
+          if (ins && ins.id === vd.id) {
+            if (this._insertLanded()) {
+              // The insert's push landed (possibly mid-drag): the vertex
+              // is a real position of the pushed set — a plain move
+              // commits it, and the stale insert preview retires here.
+              this._vertexInsert = null;
+            } else {
+              const f = this._pushedFeature(ins.id);
+              const pi = f ? addedVertexIndex(f, ins.index) : null;
+              if (pi !== null && vd.index === pi) {
+                op = 'add_vertex';
+                index = ins.index;
+              }
+            }
+          }
           this.model.set('annotation_edit', {
-            op: 'set_vertex', id: vd.id,
-            index: vd.index, x: this._vertexMove.x, y: this._vertexMove.y,
+            op, id: vd.id, index,
+            x: this._vertexMove.x, y: this._vertexMove.y,
           });
           this.model.save();
         }
@@ -533,18 +592,42 @@ export class SlideView extends DOMWidgetView {
       }
       if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_DRAWING && this._transform) {
-        // A still left click in drawing mode: append the cursor's slide
-        // position (unclamped level-0 px) as the next draft vertex.
-        // M6: the selection goes with the new draft (its first vertex
-        // supersedes it; later vertices are no-ops).
-        if (this._selectedId !== null) {
-          this._selectedId = null;
-          this._updateAnnotationButtons();
-        }
+        // A still left click in drawing mode (DESIGN.md §6.7):
+        //  - near the selected feature's edge: insert a vertex at the
+        //    *click* (the shape bulges toward it) into the closest
+        //    segment, committed as `add_vertex` with a pending preview
+        //    until the round-trip resolves it;
+        //  - otherwise: append the cursor's slide position (unclamped
+        //    level-0 px) as the next draft vertex. M6: the selection goes
+        //    with the new draft (its first vertex supersedes it; later
+        //    vertices are no-ops).
         const rect = this._canvas.getBoundingClientRect();
-        const [x, y] = math.screenToL0(
-          this._transform, e.clientX - rect.left, e.clientY - rect.top);
-        this._poly = polyEvent(this._poly, { type: 'vertex', x, y }).state;
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        const f = this._selectedFeature();
+        const seg = f ? hitTestSegment(f, this._transform, cx, cy) : null;
+        if (seg) {
+          // Click-to-insert: the last-event slot again (Python
+          // re-validates — out-of-range / coincident / degenerate inserts
+          // are refused, the document unchanged); the pending insert
+          // keeps the handle drawn (and grabbable) until the push
+          // (accepted) or the `edit ignored` status (refused) retires it.
+          this._vertexInsert = {
+            id: f.id, index: seg.segment, x: seg.x, y: seg.y,
+          };
+          this.model.set('annotation_edit', {
+            op: 'add_vertex', id: f.id,
+            index: seg.segment, x: seg.x, y: seg.y,
+          });
+          this.model.save();
+        } else {
+          if (this._selectedId !== null) {
+            this._selectedId = null;
+            this._updateAnnotationButtons();
+          }
+          const [x, y] = math.screenToL0(this._transform, cx, cy);
+          this._poly = polyEvent(this._poly, { type: 'vertex', x, y }).state;
+        }
         this._requestDraw();
       } else if (!vd && dist < CLICK_THRESHOLD_PX && d.button === 0
           && this._poly.mode === MODE_IDLE && this._transform) {
@@ -616,9 +699,7 @@ export class SlideView extends DOMWidgetView {
     }
     const { state, result } = polyEvent(this._poly, { type: 'toggle' });
     this._poly = state;
-    this._canvas.classList.toggle('islide-drawing', state.mode === MODE_DRAWING);
-    this._annotateBtn.setAttribute(
-      'aria-pressed', String(state.mode === MODE_DRAWING));
+    this._setDrawModeUI(state.mode === MODE_DRAWING);
     // M6: the selection is preserved across the mode toggle: in drawing
     // mode the selected feature's vertex handles stay up, so a selected
     // annotation can be entered-annotate -> drag-vertex edited without
@@ -641,9 +722,17 @@ export class SlideView extends DOMWidgetView {
     const { state, result } = polyEvent(this._poly, { type: 'cancel' });
     if (!result) return;
     this._poly = state;
-    this._canvas.classList.toggle('islide-drawing', false);
+    this._setDrawModeUI(false);
     this._setLocalStatus('Polygon cancelled');
     this._requestDraw();
+  }
+
+  // The drawing mode's UI state (DESIGN.md §6.4): the canvas's drawing
+  // cursor class, and the annotate button's pressed look (aria-pressed;
+  // style/index.css gives it the highlighted "on" style).
+  _setDrawModeUI(active) {
+    this._canvas.classList.toggle('islide-drawing', active);
+    this._annotateBtn.setAttribute('aria-pressed', String(active));
   }
 
   _toolbarAction(action) {
@@ -685,6 +774,59 @@ export class SlideView extends DOMWidgetView {
     return features.find((f) => f && f.id === this._selectedId) || null;
   }
 
+  /** M6 (DESIGN.md §6.7): the drawn annotation document: the pushed set
+   * with the pending vertex previews layered on — the not-yet-pushed
+   * `add_vertex` insert first (its segment index addresses the pushed
+   * document), then the live/pending vertex move (whose flat position
+   * index addresses the insert-layered document). Pure against the model.
+   */
+  _effectiveAnnotations() {
+    let doc = this.model.get('annotations') || {};
+    const ins = this._vertexInsert;
+    if (ins && !this._insertLanded()) {
+      doc = withAddedVertex(doc, ins.id, ins.index, ins.x, ins.y);
+    }
+    const mv = this._vertexMove;
+    if (mv) {
+      doc = withMovedVertex(doc, mv.id, mv.index, mv.x, mv.y);
+    }
+    return doc;
+  }
+
+  /** M6: the selected feature as drawn (pushed set + pending vertex
+   * previews) — what the handles are drawn on, so grabbing and drawing
+   * agree (a not-yet-pushed inserted vertex is grabbable immediately).
+   */
+  _selectedEffectiveFeature() {
+    if (this._selectedId === null) return null;
+    const doc = this._effectiveAnnotations();
+    const features = Array.isArray(doc.features) ? doc.features : [];
+    return features.find((f) => f && f.id === this._selectedId) || null;
+  }
+
+  /** The feature `id` of the *pushed* (model) annotation set, or null.
+   */
+  _pushedFeature(id) {
+    const doc = this.model.get('annotations');
+    const features = doc && Array.isArray(doc.features) ? doc.features : [];
+    return features.find((f) => f && f.id === id) || null;
+  }
+
+  /** M6: has the pending `add_vertex` already landed in the pushed set
+   * (its push arrived — the inserted position is a real position of the
+   * pushed document now)? Pure against the model.
+   */
+  _insertLanded() {
+    const p = this._vertexInsert;
+    if (!p) return true;
+    const f = this._pushedFeature(p.id);
+    if (!f) return false;
+    const pi = addedVertexIndex(f, p.index);
+    if (pi === null) return false;
+    const pos = featurePositions(f)[pi];
+    return !!pos && pos[0] === p.x && pos[1] === p.y;
+  }
+
   /**
    * M6 (DESIGN.md §6.7): the vertex handle pressed at pointerdown —
    * {kind: 'draft' | 'feature', id? (feature only), index} or null.
@@ -701,7 +843,7 @@ export class SlideView extends DOMWidgetView {
       const i = hitTestDraftVertex(this._poly.draft, this._transform, x, y);
       if (i !== null) return { kind: 'draft', index: i };
     }
-    const f = this._selectedFeature();
+    const f = this._selectedEffectiveFeature();
     if (f) {
       const i = hitTestVertex(f, this._transform, x, y);
       if (i !== null) return { kind: 'feature', id: f.id, index: i };
@@ -923,14 +1065,10 @@ export class SlideView extends DOMWidgetView {
     const actx = c.getContext('2d');
     actx.setTransform(dpr, 0, 0, dpr, 0, 0);
     actx.clearRect(0, 0, w, h);
-    // M6: the live vertex-move preview (a saved-feature drag in flight);
-    // cleared on commit and on any annotations push.
-    const rawDoc = this.model.get('annotations') || {};
-    const doc = this._vertexMove
-      ? withMovedVertex(
-          rawDoc, this._vertexMove.id, this._vertexMove.index,
-          this._vertexMove.x, this._vertexMove.y)
-      : rawDoc;
+    // M6: the pending vertex previews (a saved-feature drag in flight, a
+    // not-yet-pushed click-inserted vertex) layered over the pushed set
+    // (see _effectiveAnnotations).
+    const doc = this._effectiveAnnotations();
     drawAnnotations(actx, {
       transform: t,
       annotations: doc,
@@ -970,6 +1108,21 @@ export class SlideView extends DOMWidgetView {
             ? this._vertexDrag.index
             : -1;
         drawVertexHandles(actx, t, this._poly.draft, hl);
+      }
+    }
+    // M6 (DESIGN.md §6.7): the click-to-insert hover preview — pointer on
+    // the canvas (no gesture in flight), drawing mode, and a still click
+    // this close to a segment of the selected feature would insert a
+    // vertex at the click (the shape bulges toward it). The same
+    // `hitTestSegment` the click
+    // commits (what you see is what lands). Nothing to clear: it is a
+    // pure function of mode / selection / cursor, and each of those goes
+    // away on its own (pointer leave, deselect, mode switch, pan).
+    if (this._poly.mode === MODE_DRAWING && !this._dragging && this._cursor) {
+      const f = this._selectedFeature();
+      if (f) {
+        const seg = hitTestSegment(f, t, this._cursor.x, this._cursor.y);
+        if (seg) drawInsertPreview(actx, t, f, seg);
       }
     }
   }

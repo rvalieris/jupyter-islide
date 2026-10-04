@@ -44,7 +44,8 @@ notebook, drive it from Python.
 
 - Full geometry editing of annotations in the UI: M3 *creates* polygons
   by drawing, M4 can select, delete, label, and recolor existing shapes,
-  and M6 can drag an individual vertex (§6.7) — but there is no
+  and M6 can drag an individual vertex or insert one into a selected
+  feature's edge (§6.7) — but there is no
   per-shape move, resize, or bulk geometry edit.
 - Remote slides (HTTP/`openslide_server`, S3). *The backend interface is
   designed to allow it later; v1 is local files only.*
@@ -249,6 +250,7 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 | toolbar | fit slide, 1:1 (the −/+ zoom buttons were removed in the M4 polish pass — wheel zoom covers them) | M1 ✅ / M4 |
 | right-drag | pan (both modes) | M3 |
 | left click (M3 drawing mode) | append a polygon vertex | M3 |
+| left click (drawing mode, a shape selected, near one of its edges) | insert a vertex at the click into the selected feature's closest segment (the shape bulges toward the click; a dashed preview of the split edges + the ghost vertex shows as the cursor nears) | M6 |
 | key **A** | toggle M3 drawing mode (enter / save-and-exit) | M3 |
 | key **Esc** (M3 drawing mode) | cancel: discard the draft, exit | M3 |
 | toolbar **annotate** | toggle M3 drawing mode (the visible entry point; **A** stays the alias; pressed while drawing) | M4 |
@@ -539,8 +541,9 @@ non-goal stands; a single vertex moves by M6's `set_vertex`, §6.7),
 so in M4 `coordinates` change only by re-importing.
 
 **Annotate button.** M3's drawing mode was keyboard-only. M4 gives it a
-toolbar toggle button, **annotate** (pressed while drawing): the visible
-entry point to the annotation tools. **A** stays the alias and the two
+toolbar toggle button, **annotate** (pressed while drawing, which
+highlights it — see style/index.css): the visible entry point to the
+annotation tools. **A** stays the alias and the two
 drive the same mode state machine (§6.4) — the button only mirrors the
 mode in its pressed state.
 
@@ -605,7 +608,7 @@ After **del** the actions re-disable (selection cleared); after
 
 **Wire: `annotation_edit` (JS→Py, default `null`).** The house
 last-event pattern (`viewport`, §6.2; `last_polygon`, §6.4) — one trait
-for all four ops, discriminated by `op`, so the contract grows by one
+for all the ops, discriminated by `op`, so the contract grows by one
 row per op:
 
 ```
@@ -613,6 +616,7 @@ null | {op: "delete",  id}
      | {op: "set_label", id, label}        # string; "" / whitespace-only = clear (null)
      | {op: "set_color", id, color, fill}  # each a CSS color, or null (= default)
      | {op: "set_vertex", id, index, x, y} # M6: one position -> (x, y) level-0 px (§6.7)
+     | {op: "add_vertex", id, index, x, y} # M6: insert (x, y) at flat segment index (§6.7)
 ```
 
 The view is the sole writer, saving per command (`model.set` +
@@ -626,21 +630,25 @@ click) — `delete` removes the feature, `set_label` / `set_color` mutate
 its `properties` (no-value → the key is dropped: `set_label` with
 `""` / whitespace-only clears the label; `set_color` with a `null`
 member drops it — the M2 *use-the-default* convention, black stroke,
-transparent fill), `set_vertex` replaces one position (§6.7), and the
+transparent fill), `set_vertex` replaces one position, `add_vertex`
+inserts one (§6.7), and the
 result is pushed as the whole updated set on `annotations` (the M2 wire
 rule: whole set, no viewport filtering). `status` reports the applied
 op (`deleted #a3` / `edited #a3 (label)` / `edited #a3 (color)` /
 `edited #a3 (vertex)`). An `apply_edit` `ValueError` — a malformed
-command, or a refused `set_vertex` (bad `index`, non-finite position,
-or a move that would degenerate the geometry) — is a no-op on state with
+command, or a refused vertex op (a bad `index`, a non-finite position,
+a vertex on top of an existing one, or the move / insert degenerating
+the geometry) — is a no-op on state with
 `status` = `edit ignored: <reason>`.
 
 Last-event replay is safe here in a way it is not for `last_polygon`:
 on re-attach the JS snapshot re-sends both `annotations` (the pushed
-set) and the last command, and all four ops are **idempotent** over
+set) and the last command, and all the ops are **idempotent** over
 that set — a `delete`'s id is already gone, `set_label` / `set_color`
 re-apply the same values, a `set_vertex` re-moves a position to
-coordinates it already has — so replay is a harmless no-op.
+coordinates it already has, an `add_vertex` finds its position
+already at the insertion spot (a replay no-op) — so replay is a
+harmless no-op.
 (`last_polygon` is an append: re-sent after the set is restored, it
 duplicates the shape — a known M3 limitation, out of scope here.)
 
@@ -652,10 +660,11 @@ v.delete_annotation(id)
 v.set_annotation_label(id, "tumor")      # None / "" clears
 v.set_annotation_color(id, color="red", fill=None)   # None = default
 v.set_annotation_vertex(id, index, x, y)             # M6: one position (§6.7)
+v.add_annotation_vertex(id, index, x, y)             # M6: insert a position (§6.7)
 ```
 
-**Not in M4** (explicit): geometry editing beyond M6's single-vertex
-move (per-shape move / resize — §2 non-goal); multi-select and
+**Not in M4** (explicit): geometry editing beyond M6's vertex edits
+(drag / insert) (per-shape move / resize — §2 non-goal); multi-select and
 drag-select; hover highlight and tooltips
 (click only); keyboard shortcuts for del / label / color (**A** stays
 with the mode toggle); undo (the reset paths are `clear_annotations()`
@@ -765,11 +774,12 @@ threads, touch pinch, keyboard navigation, OSD-style reference strip.
 
 ### 6.7 Vertex editing (M6)
 
-M6 is the one geometry edit the v1 UI makes: **drag an individual
+M6 makes the v1 UI's two geometry edits: **drag an individual
 vertex** — the in-progress draft's vertices while drawing, and a
 selected saved feature's vertices in either mode (idle *or* drawing —
-entering drawing mode keeps the M4 selection, §6.5). Per-shape move /
-resize stay out (§2 non-goal).
+entering drawing mode keeps the M4 selection, §6.5) — and **insert a
+vertex into a selected feature's edge** (drawing mode). Per-shape
+move / resize stay out (§2 non-goal).
 
 **Handles & grab.** `drawVertexHandles` (annotations.js) draws, after
 the shapes on the annotation overlay, a small white circle with an
@@ -794,6 +804,46 @@ mutated). Draft moves stay local drawing state — no trait, no commit
 event; the ring is validated on save as before, so a drag that
 collapses the draft to degenerate is discarded with the draft on the
 saving **A**/Esc.
+
+**Inserted vertices (drawing mode, selected feature).** A still
+left-click in drawing mode first checks the *selected feature's*
+edges: pure `hitTestSegment(feature, transform, x, y)` (annotations.js)
+finds the segment within `SEGMENT_PICK_RADIUS` = 320 screen px of the
+cursor (nearest first, the distance to the segment's line — screen-space,
+so the tolerance is zoom-constant; Points / MultiPoints have no segments
+and never hit) and reports it with the **raw click** as the insert
+position in level-0 px — the vertex lands at the click, so the shape
+bulges toward it (outward or inward, where the click is). Before the
+click, the view shows what it will do: while the pointer rests within the
+tolerance (no gesture in flight, drawing mode), `drawInsertPreview`
+(annotations.js) draws the two edges the segment would become — dashed
+(the draft's `DASH_PATTERN` "what will be drawn" style) from each
+segment endpoint to the clicked point — and the ghost vertex handle at
+the clicked point. The preview is a pure function of mode / selection /
+cursor in the draw pass, computed with the same `hitTestSegment` the
+click commits (what you see is what lands): pointer leave, deselect, a
+mode switch, or the start of any drag removes it, with no state to
+clear. If a segment is found, the
+click inserts instead of appending a draft vertex: the view previews
+with `withAddedVertex(annotations, id, segment, x, y)` — the geometry
+twin of the drag preview, same shallow-copy/no-mutation rules — and
+commits `{op: "add_vertex", id, index, x, y}` where `index` is the
+*flat segment index* (the walk below; a segment is the entity being
+split, unlike `set_vertex`'s position index). Python's `apply_edit`
+(`_insert_vertex`) re-does the insert and re-validates: `index` in
+range, `x`/`y` finite, the result **non-degenerate** (same
+`_is_degenerate` thresholds), and the new position **not on top of
+an existing vertex** (that would create a zero-length edge) — then
+pushes the updated document as for the drag (`status` =
+`edited #a3 (vertex)`; a refusal is `edit ignored: <reason>` with the
+preview cleared and the pushed set untouched). A replay of a landed
+insert — the requested position already sits at the insertion spot —
+is a **no-op, not an error** (the last-event slot is idempotent, as
+for `set_vertex`). The view tracks the pending insert (the
+`_vertexInsert` preview, retired by the round-trip exactly like the
+`_vertexMove` preview), so a drag of the just-inserted vertex before
+the push lands re-commits the `add_vertex` at the final position
+instead of a `set_vertex` on an index Python does not have yet.
 
 **Saved-feature vertices (both modes).** The drag is optimistic and
 local: `withMovedVertex(annotations, id, index, x, y)` (annotations.js)
@@ -821,10 +871,11 @@ frames the round-trip takes. Only the round-trip retires the preview
 (the `annotations` push or the `edit ignored` status), and a still-
 release on a handle (no move) never touches it.
 
-**`index` — the flat canonical position order.** Both sides walk the
-feature in the same order: JS `featurePositions(feature)` (the
-renderer's flattening, what the handles are drawn from) and Python's
-`apply_edit` / `_move_vertex`:
+**`index` — the flat canonical order.** Both sides walk the feature in
+the same order: JS `featurePositions(feature)` (the renderer's
+flattening, what the handles are drawn from) and Python's
+`apply_edit` / `_move_vertex` — for `set_vertex` the `index` is into
+the *positions* of that walk, and for `add_vertex` into its *segments*
 
 - `Point` — its single position (`index` 0);
 - `MultiPoint` / `LineString` — coordinate order;
@@ -832,20 +883,28 @@ renderer's flattening, what the handles are drawn from) and Python's
 - `MultiPolygon` — islands in order, rings within an island,
   positions within a ring.
 
-After the move, rings (and MultiPolygon islands) are regrouped from the
+After the edit, rings (and MultiPolygon islands) are regrouped from the
 walked positions, so the geometry's *shape* is preserved (holes stay
-holes, islands stay islands).
+holes, islands stay islands). For a segment, the segment's positions
+bound it (a ring's last segment — the *closing edge* — runs from the
+ring's last position back to its first, and its inserted position is
+appended to the ring); the inserted position lands at flat position
+`index + 1` (JS `addedVertexIndex`, the invariant the view uses to
+match a pending insert against the pushed set).
 
-**Replay & idempotence.** `set_vertex` on the last-event slot replays
-harmlessly: re-attach re-sends the pushed document and the command, and
-re-moving a position to coordinates it already has is a no-op (M4's
-idempotence argument, §6.5). An out-of-range `index` on replay (e.g.
-after a `set_annotations()` replace shrank the feature) is refused
-with the `edit ignored:` status, document untouched.
+**Replay & idempotence.** `set_vertex` / `add_vertex` on the
+last-event slot replay harmlessly: re-attach re-sends the pushed
+document and the command, re-moving a position to coordinates it
+already has is a no-op (M4's idempotence argument, §6.5), and a
+re-sent insert finds its position already at the insertion spot (a
+no-op, not an error). An out-of-range `index` on replay (e.g. after a
+`set_annotations()` replace shrank the feature) is refused with the
+`edit ignored:` status, document untouched.
 
-**Python API.** `v.set_annotation_vertex(id, index, x, y)` issues the
-same command headlessly (same validation, same degenerate refusal —
-the method surfaces `apply_edit`'s `ValueError`).
+**Python API.** `v.set_annotation_vertex(id, index, x, y)` and
+`v.add_annotation_vertex(id, index, x, y)` issue the same commands
+headlessly (same validation, same degenerate / coincident refusals —
+the methods surface `apply_edit`'s `ValueError`).
 
 ## 7. Python API
 
@@ -879,9 +938,11 @@ v.annotations                     # the normalized document — the GeoJSON expo
 v.delete_annotation("a3")
 v.set_annotation_label("a3", "tumor")   # None / "" clears the label
 v.set_annotation_color("a3", color="red", fill=None)  # None = default
-# M6: vertex editing — move one position (index = flat canonical order,
-# §6.7); x, y level-0 px
+# M6: vertex editing — move one position (index = flat canonical
+# position order, §6.7), or insert one at a flat segment index;
+# x, y level-0 px
 v.set_annotation_vertex("a3", 0, 100.0, 200.0)
+v.add_annotation_vertex("a3", 1, 50.0, 80.0)
 
 v.close()                      # joins open thread, closes the slide handle
 ```
@@ -904,7 +965,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
 | `annotations` | Py→JS | dict | the normalized annotation document — a restricted GeoJSON `FeatureCollection` in level-0 px (§6.3); M2: imported set, M3: drawn polygons appended (§6.4) |
 | `last_polygon` | JS→Py | list | M3: the just-saved drawn polygon — open ring `[[x, y], …]`, level-0 px (`null` = none yet); Python validates and appends the shape to `annotations` |
-| `annotation_edit` | JS→Py | dict | M4/M6: the last issued edit command — `{op: "delete" \| "set_label" \| "set_color" \| "set_vertex", id, …}` (`null` = none yet); Python applies it to `annotations` and pushes the updated set (§6.5/§6.7) |
+| `annotation_edit` | JS→Py | dict | M4/M6: the last issued edit command — `{op: "delete" \| "set_label" \| "set_color" \| "set_vertex" \| "add_vertex", id, …}` (`null` = none yet); Python applies it to `annotations` and pushes the updated set (§6.5/§6.7) |
 | `status` | Py→JS | str | status line (open progress / error / last render's level·tile info; the live zoom·µm/px is the JS readout's) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
@@ -993,9 +1054,9 @@ fetch pass.
 | M2 ✅ | **Read-only annotations** *(done)*. GeoJSON import (FeatureCollection / point / line / polygon; level-0 `px` default, `um` option) → normalized shape list → `annotations` trait (Py→JS) → second canvas overlay: viewport culling, screen-constant styling (black stroke / transparent fill defaults, per-feature `color`/`fill`/`label`), point labels, alpha slider. No UI editing (M3 adds polygon *drawing*, §6.4). | `examples/m2_demo.ipynb`: `set_annotations` (inline GeoJSON, level-0 px + microns) + smooth pan/zoom over the overlay |
 | M3 ✅ | **Polygon drawing** *(done)*. Key **A** toggles a drawing mode (crosshair; live draft: vertex dots, segments, dashed closure to the cursor); left click appends a vertex (≥ 4 px left drag = pan, right-drag pans in both modes, wheel/minimap live); M1's double-click zoom gesture is removed (unnecessary); the second **A** saves the ring — the view sets `last_polygon` (JS→Py) and Python normalizes it (≥ 3 pts, nonzero area, else discarded) and appends a `polygon` shape to `annotations`; **Esc** cancels. No callbacks; no point/line/rect features; the reserved `last_click`/`last_region` traits are removed from the contract. Tile JPEG quality becomes a constructor argument (`jpeg_quality`, default 85; the §5.3 PNG fallback is dropped — exact pixels via `read_crop()`). | `examples/m3_demo.ipynb`: hand-drawn polygon + `v.annotations` + `read_crop` of its bbox |
 | M3.5 ✅ | **Canonical GeoJSON annotation format.** The M2/M3 flat shape list becomes the annotation document of §6.3: the `annotations` trait is a `Dict` (empty-`FeatureCollection` default; trait assignment coerced through the normalizer); `set_annotations(doc, units)` keeps its contract — validate → normalize → assign → push — and the stored/returned value *is* the document; the `last_polygon` observer appends a `Polygon` feature (fresh non-colliding id, empty `properties`); the renderer iterates features over three primitives (markers / open path / evenodd ring-set) and reads `label`/`color`/`fill` from `properties`. `MultiPoint` / `MultiPolygon` stay whole; `GeometryCollection` expands at import; degenerate members drop with warnings; ids unique (collision → `ValueError`) and stable — fixing the M2 duplicate-id bug. Wire-contract change: module version 1.0.0 → 2.0.0 + labextension rebuild; the `last_polygon` and planned `annotation_edit` contracts are unchanged. | `tests/test_annotations.py` (canonical document over all six source geometry types; units; degenerate drops; id uniqueness; `properties` pass-through), `test_widget_m2.py` / `test_widget_m3.py` (document trait; `last_polygon` appends a feature), `frontend/test/annotations.test.js` (three primitives; per-feature guard); `examples/m2_demo.ipynb` + `m3_demo.ipynb`: same behavior, `v.annotations` is the document |
-| M4 ✅ | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
+| M4 ✅ | **Annotation editing.** Toolbar **annotate** toggle (visible entry to the M3 drawing mode, highlighted while drawing; **A** unchanged). In idle mode a left click hit-tests existing annotations → selection (thick accent highlight; miss clears; navigation keeps it; entering drawing mode clears it). While selected: **del** removes the shape, **label** attaches/edits its label (inline input; Enter commits, Esc cancels; labels now render on lines/polygons too), **color** sets stroke color and/or fill (pickers + clear-fill). Edits ride the new JS→Py `annotation_edit` last-event trait; Python applies with pure `apply_edit` and pushes the whole set; the ops are idempotent over the restored set, so replay is safe. No geometry editing (move/resize/vertex), no multi-select, no hover/tooltips, no undo, no export. Polish: the −/+ zoom toolbar buttons are removed (wheel zoom covers them; **fit** / **1:1** stay). | `examples/m4_demo.ipynb`: select an imported polygon → label + color; draw a polygon (M3) → delete; `v.annotations` reflects the edits |
 | M5 | **Smooth zoom.** Two OSD feel-ideas, ported into the push architecture (§6.6): (a) *level cross-fade* — `tile_geo` accumulates view-side (evicted in lockstep with the 400-image LRU); when the §4 selected level changes the compositor draws the new level at alpha 1 and fades the old one out over 300 ms, coarsest-first (pure `blend.js`, no wire change, no extra bytes — the kernel still pushes one plan-level per viewport; a transient rAF loop runs only while the fade is live, idle CPU stays 0). (b) *center-first fetch* — the read plan is split into grid-anchored 4×4-tile (1024 px) blocks sorted by distance to the viewport center (the OSD tile-priority-queue idea as a pre-sorted list — no heap; the §5 cache-key invariant and the viewport-invariance regression test are untouched), and `_render_once` pushes in two stages (center chunk, then the full set) so the viewport center appears first; single-block plans (the zoomed-out case) push once, byte-for-byte as today. No new traits; module version 2.0.0; `HtmlSlideViewer` untouched. Out: animated pan/zoom (springs, dropped from this plan), WebGL, prefetch, per-tile fades, parallel fetch, touch pinch (§6.6.3). | `examples/m5_demo.ipynb`: wheel-zoom/pan walkthrough (cross-fade), M3 draw + M4 select during/after a fade; `tests/test_plan.py` (chunking, center-first order, single-chunk regression), `test_widget_m5.py` (two-stage push; final trait == full set), `frontend/test/blend.test.js`, compositor multi-level alpha |
-| M6 | **Vertex editing & ship.** The one geometry edit the annotation tools get (§6.7): drag individual vertices — the draft's while drawing, a selected saved feature's in either mode (handles: 3 px white/accent circles at each position, 8 px grab radius, nearest first; a still click on a handle is a no-op). A draft drag moves the local draft (no wire); a saved-feature drag is an optimistic local preview (`withMovedVertex`) committed on release as the new `annotation_edit` op `set_vertex` (flat canonical `index`; Python re-validates — bad index / non-finite position / degenerate result → `edit ignored: <reason>`, document untouched — else pushes the updated document). Then polish & ship: docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
+| M6 | **Vertex editing & ship.** The geometry edits the annotation tools get (§6.7): drag individual vertices — the draft's while drawing, a selected saved feature's in either mode (handles: 3 px white/accent circles at each position, 8 px grab radius, nearest first; a still click on a handle is a no-op) — and insert one into a selected feature's edge (drawing mode, a still click within 320 screen px of a segment; a dashed preview of the split edges + the ghost vertex shows as the cursor nears). A draft drag moves the local draft (no wire); a saved-feature drag is an optimistic local preview (`withMovedVertex`) committed on release as the new `annotation_edit` op `set_vertex` (flat canonical `index`); an edge click is a preview (`withAddedVertex`) committed as `add_vertex` (flat segment `index`; the vertex lands at the click — the shape bulges toward it). Python re-validates both — bad index / non-finite position / coincident vertex / degenerate result → `edit ignored: <reason>`, document untouched — else pushes the updated document. Then polish & ship: docs (README + docsite), example slides in docs, perf pass (DPR-aware canvas, HiDPI crispness), PyPI release `jupyter-islide`, `pip install jupyter-islide[dev]`, CI. | published package |
 
 M6 cleanup (done): removed the M0 spike viewer `HtmlSlideViewer` (the HTML
 tile-composite class in `widget.py`) and `examples/m0_demo.ipynb` — the M1
@@ -1125,17 +1186,36 @@ historical record and keep their references. |
   idempotence (same command twice == once), unknown id → `None`,
   bad `index` / non-finite position → `ValueError`, and degenerate
   results refused — collapse a ring onto one point, collapse a hole,
-  degenerate a `LineString` (the document is left untouched).
+  degenerate a `LineString` (the document is left untouched);
+  `add_vertex` — an insert per geometry type (LineString midpoint,
+  Polygon outer / hole / closing edge, MultiPolygon second island —
+  the flat segment `index` of §6.7, ring/island shape preserved),
+  idempotence (a replay of a landed insert returns the input
+  unchanged; a far-endpoint insert is the same no-op), unknown id →
+  `None`, out-of-range segment / coincident vertex / degenerate
+  result → `ValueError`, non-mutation of the input document.
   Headless widget (`tests/test_widget_m4.py` additions): `set_vertex`
-  via the `annotation_edit` trait → updated document on `annotations`
-  + `edited #a1 (vertex)`; a degenerate refusal → `edit ignored: <reason>`
-  and the document unchanged; `set_annotation_vertex` API route. JS
+  / `add_vertex` via the `annotation_edit` trait → updated document on
+  `annotations` + `edited #a1 (vertex)`; unknown id →
+  `edit ignored: unknown annotation id`; a degenerate / coincident /
+  out-of-range refusal → `edit ignored: <reason>` and the document
+  unchanged; `set_annotation_vertex` / `add_annotation_vertex` API
+  routes. JS
   (`frontend/test/`): `annotations.test.js` — `featurePositions` (flat
   canonical order over all types; malformed input → `[]`),
   `withMovedVertex` (all geometry types, immutability, unknown id /
-  out-of-range index → the same document), `hitTestVertex` (radius,
-  nearest-first, misses, undrawable features), `drawVertexHandles`
-  (one circle per position, highlight radius, empty positions); and
+  out-of-range index → the same document), `withAddedVertex` (all
+  geometry types incl. closing edge, immutability, unknown id / bad
+  segment / no-segment features → the same document), `hitTestVertex`
+  (radius, nearest-first, misses, undrawable features),
+  `hitTestSegment` (closest segment, the raw click as the insert
+  position, radius inclusive, zoom-scaled screen-px tolerance, closing
+  edge, points never hit),
+  `addedVertexIndex` (segment + 1; null for non-segments),
+  `drawVertexHandles` (one circle per position, highlight radius,
+  empty positions), `drawInsertPreview` (the dashed split edges with
+  `DASH_PATTERN` on for the edge stroke only, the ghost handle at the
+  clicked point, nothing on a miss / out-of-range segment); and
   `polydraw.test.js` — `hitTestDraftVertex` (radius / miss / empty /
   null) and `move_vertex` (a valid move rewrites only that position and
   leaves the ring valid; bad index / bad position no-ops; the draft

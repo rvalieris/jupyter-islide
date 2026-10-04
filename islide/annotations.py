@@ -390,8 +390,9 @@ def _path_length(pts: list[tuple[float, float]]) -> float:
 # command is discriminated by `op`; the ops are idempotent over a
 # normalized document (a replayed `delete` finds no feature, the replayed
 # set ops store the same values; a replayed `set_vertex` stores the same
-# position).
-EDIT_OPS = ("delete", "set_label", "set_color", "set_vertex")
+# position; a replayed `add_vertex` finds its position already at the
+# insertion spot and is a no-op).
+EDIT_OPS = ("delete", "set_label", "set_color", "set_vertex", "add_vertex")
 
 
 def apply_edit(doc: dict, cmd: Any) -> dict | None:
@@ -404,6 +405,8 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
         {"op": "set_color", "id": <str>, "color": <str | None>,
          "fill": <str | None>}
         {"op": "set_vertex", "id": <str>, "index": <int>, "x": <float>,
+         "y": <float>}
+        {"op": "add_vertex", "id": <str>, "index": <int>, "x": <float>,
          "y": <float>}
 
     Returns a **new** document, or ``None`` if ``id`` does not address a
@@ -421,16 +424,30 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
     geometry must keep the document's degeneracy invariants (every ring
     at or above the area threshold, a LineString at or above the length
     threshold) — a move that degenerates the geometry raises
-    ``ValueError``. The
+    ``ValueError``.
+    ``add_vertex`` inserts one position of ``[x, y]`` (level-0 px) at
+    flat segment ``index`` in the feature's canonical segment order (a
+    LineString's ``n`` positions give ``n - 1`` segments; a ring of ``n``
+    positions gives ``n`` segments — the last being the closing edge back
+    to the ring's first position; a Polygon's rings in order, a
+    MultiPolygon's islands in order, rings within an island): the new
+    position is placed between the segment's two endpoints (appended to
+    the ring for a closing edge); the same degeneracy invariants apply —
+    an insertion that degenerates the geometry or one that lands on top
+    of an existing vertex raises ``ValueError``; an insertion whose
+    position already sits at the insertion spot is a replay (the input
+    document is returned unchanged). The
     canonical form has no ``None``-valued properties. The input is never
     mutated; the returned document shares
     geometry objects with it (the widget re-normalizes through
     ``parse_annotations`` on assignment). Raises ``ValueError`` on a
     malformed command: unknown op, missing/empty/non-string ``id``, a
     non-string ``label``/``color``/``fill`` (missing keys count as
-    malformed — the wire form always carries them), or ``set_vertex``
-    ``index``/``x``/``y`` that are not an int / finite numbers, or an
-    ``index`` that does not address a position of the feature.
+    malformed — the wire form always carries them), or ``set_vertex`` /
+    ``add_vertex`` ``index``/``x``/``y`` that are not an int / finite
+    numbers, or a ``set_vertex`` ``index`` that does not address a
+    position of the feature, or an ``add_vertex`` ``index`` that does not
+    address a segment of the feature.
     """
     if not isinstance(doc, dict) or not isinstance(doc.get("features"), list):
         raise ValueError("annotation document must be a FeatureCollection")
@@ -457,7 +474,38 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
             if key not in cmd:
                 raise ValueError(f"set_color command needs a {key!r} member")
         return _set_props(doc, idx, {"color": _edit_text(cmd["color"]), "fill": _edit_text(cmd["fill"])})
-    # set_vertex
+    if op == "add_vertex":
+        index = cmd.get("index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ValueError(f"add_vertex 'index' must be an integer, got {index!r}")
+        x = _vertex_number(cmd.get("x"), "x", "add_vertex")
+        y = _vertex_number(cmd.get("y"), "y", "add_vertex")
+        geom = doc["features"][idx]["geometry"]
+        count = _segment_count(geom)
+        if not (0 <= index < count):
+            raise ValueError(
+                f"add_vertex 'index' {index} is out of range "
+                f"(the feature has {count} segment{'s' if count != 1 else ''})"
+            )
+        moved, kind = _insert_vertex(geom, index, (x, y))
+        if kind == "noop":
+            return doc  # replayed insert: the position is already there
+        if kind == "coincident":
+            raise ValueError(
+                "add_vertex would place a vertex on top of an existing one"
+            )
+        if _is_degenerate(moved):
+            raise ValueError(
+                "add_vertex would make the geometry degenerate "
+                "(a zero-area ring or a zero-length line)"
+            )
+        feature = dict(doc["features"][idx])
+        feature["geometry"] = moved
+        out = list(doc["features"])
+        out[idx] = feature
+        return {"type": "FeatureCollection", "features": out}
+    # set_vertex — the unguarded tail (only reachable with op == "set_vertex":
+    # delete / set_label / set_color / add_vertex all returned above)
     index = cmd.get("index")
     if isinstance(index, bool) or not isinstance(index, int):
         raise ValueError(
@@ -487,14 +535,15 @@ def apply_edit(doc: dict, cmd: Any) -> dict | None:
     return {"type": "FeatureCollection", "features": out}
 
 
-def _vertex_number(v: Any, what: str) -> float:
-    """A ``set_vertex`` ``x``/``y`` member: a finite number (level-0 px)."""
+def _vertex_number(v: Any, what: str, op: str = "set_vertex") -> float:
+    """A ``set_vertex`` / ``add_vertex`` ``x``/``y`` member: a finite
+    number (level-0 px)."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise ValueError(
-            f"set_vertex '{what}' must be a number, got {type(v).__name__}"
+            f"{op} '{what}' must be a number, got {type(v).__name__}"
         )
     if not math.isfinite(v):
-        raise ValueError(f"set_vertex '{what}' must be finite, got {v!r}")
+        raise ValueError(f"{op} '{what}' must be finite, got {v!r}")
     return float(v)
 
 
@@ -534,6 +583,83 @@ def _vertex_count(geometry: dict) -> int:
         return len(coords)
     rings = _canonical_rings(geometry)
     return sum(len(r) for r in rings) if rings is not None else 0
+
+
+def _segment_count(geometry: dict) -> int:
+    """How many segments a flat ``add_vertex`` ``index`` can address:
+    a LineString's ``n`` positions give ``n - 1``; a ring of ``n``
+    positions gives ``n`` (the closing edge back to its first position
+    counts); Point / MultiPoint give ``0``."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return 0
+    if gtype == "LineString":
+        return max(0, len(coords) - 1)
+    rings = _canonical_rings(geometry)
+    if rings is None:
+        return 0
+    return sum(len(r) for r in rings)
+
+
+def _insert_vertex(
+    geometry: dict, seg: int, point: tuple[float, float]
+) -> tuple[dict, str]:
+    """Insert position ``point`` at flat segment ``seg`` (canonical
+    order), returning ``(geometry, kind)``: kind is ``'inserted'`` (the
+    new geometry — the input is never mutated), ``'noop'`` (a position
+    equal to ``point`` already sits at the insertion spot — the replay
+    case, the input returned unchanged), or ``'coincident'`` (``point``
+    lies on top of the segment's other endpoint — a degenerate insert).
+    """
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if gtype == "LineString":
+        if not (0 <= seg < len(coords) - 1):
+            return geometry, "coincident"
+        a = coords[seg]
+        if (a[0], a[1]) == point:
+            return geometry, "coincident"
+        b = coords[seg + 1]
+        if (b[0], b[1]) == point:
+            return geometry, "noop"  # the insertion spot already holds it
+        new_coords = coords[: seg + 1] + [[point[0], point[1]]] + coords[seg + 1:]
+        return {**geometry, "coordinates": new_coords}, "inserted"
+    rings = _canonical_rings(geometry)
+    if rings is None:
+        return geometry, "coincident"
+    offset = 0
+    for ring in rings:
+        n = len(ring)
+        if offset <= seg < offset + n:
+            local = seg - offset
+            a = ring[local]
+            b = ring[(local + 1) % n]
+            if (a[0], a[1]) == point:
+                return geometry, "coincident"
+            if local == n - 1:  # the closing edge
+                if (b[0], b[1]) == point:
+                    return geometry, "coincident"  # no insertion spot to replay from
+                new_ring = ring + [[point[0], point[1]]]
+            else:
+                if (b[0], b[1]) == point:
+                    return geometry, "noop"  # the insertion spot already holds it
+                new_ring = ring[: local + 1] + [[point[0], point[1]]] + ring[local + 1:]
+            if gtype == "Polygon":
+                geom2 = {
+                    **geometry,
+                    "coordinates": [new_ring if r is ring else r for r in coords],
+                }
+            else:
+                geom2 = {**geometry, "coordinates": [
+                    [new_ring if r is ring else r for r in island]
+                    if isinstance(island, list) and ring in island
+                    else island
+                    for island in coords
+                ]}
+            return geom2, "inserted"
+        offset += n
+    return geometry, "coincident"
 
 
 def _move_vertex(geometry: dict, index: int, point: tuple[float, float]) -> dict | None:

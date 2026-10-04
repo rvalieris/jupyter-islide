@@ -24,9 +24,11 @@ export const SLIDE_MODEL_DEFAULTS = {
   // M4/M6: the last issued annotation edit command (JS -> Py last-event
   // slot; DESIGN.md §6.5/§6.7): {op: "delete" | "set_label" | "set_color",
   // id, ...} or {op: "set_vertex", id, index, x, y} (index: the feature's
-  // flat canonical position index, x/y level-0 px), or null (no command
-  // yet). The Python observer applies it to `annotations` and pushes the
-  // updated set.
+  // flat canonical position index, x/y level-0 px) or {op: "add_vertex",
+  // id, index, x, y} (index: the feature's flat canonical *segment* index,
+  // x/y the new position in level-0 px), or null (no command yet). The
+  // Python observer applies it to `annotations` and pushes the updated
+  // set.
   annotation_edit: null,
   status: '',
 };

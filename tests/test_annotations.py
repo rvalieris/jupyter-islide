@@ -11,7 +11,8 @@ aN skipping used ids, duplicates a ValueError), properties passthrough
 (px default, um via mpp, before the degenerate checks), degenerate drops
 (Polygon, LineString, MultiPolygon islands, feature-level warning), the
 malformed-input ValueError contract, and the pure edit commands
-(apply_edit: delete / set_label / set_color / set_vertex, unknown id ->
+(apply_edit: delete / set_label / set_color / set_vertex / add_vertex,
+unknown id ->
 None, malformed or refused commands -> ValueError, input never mutated,
 idempotent over the document).
 """
@@ -788,5 +789,208 @@ class TestApplyEditSetVertex:
         with pytest.raises(ValueError, match="degenerate"):
             apply_edit(doc, {"op": "set_vertex", "id": "sv_mpt",
                              "index": 4, "x": 20, "y": 20})
+
+
+# ----------------------- add_vertex (vertex insertion, DESIGN.md §6.7)
+
+def _av_doc():
+    """One feature of each vertex-capable geometry type, ids av_*.
+
+    Canonical flat segment order (the order an add_vertex `index`
+    addresses — a segment is the entity being split, one index space apart
+    from set_vertex's flat position order):
+      av_p:   no segments (a Point has none)
+      av_mp:  no segments (a MultiPoint has none)
+      av_ls:  0              positions 0..1
+      av_pg:  0..2 outer ring (2 = its closing edge), 3..5 hole ring
+              (5 = its closing edge)
+      av_mpt: 0..2 island 1 (2 = its closing edge), 3..5 island 2
+              (5 = its closing edge)
+    """
+    return fc(
+        feat(point(1, 2), fid="av_p"),
+        feat({"type": "MultiPoint",
+              "coordinates": [[0, 0], [1, 0], [2, 0], [3, 0]]}, fid="av_mp"),
+        feat({"type": "LineString", "coordinates": [[0, 0], [4, 0]]}, fid="av_ls"),
+        feat({"type": "Polygon", "coordinates": [
+            [[0, 0], [10, 0], [10, 10]],
+            [[4, 4], [6, 4], [6, 6]],
+        ]}, fid="av_pg"),
+        feat({"type": "MultiPolygon", "coordinates": [
+            [[[0, 0], [5, 0], [5, 5]]],
+            [[[20, 20], [25, 20], [25, 25]]],
+        ]}, fid="av_mpt"),
+    )
+
+
+class TestApplyEditAddVertex:
+    def test_linestring_inserts_between_the_endpoints(self):
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_ls",
+                         "index": 0, "x": 2, "y": 3})
+        assert out["features"][2]["geometry"]["coordinates"] == \
+            [[0, 0], [2, 3], [4, 0]]
+
+    def test_polygon_inserts_on_the_outer_ring(self):
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_pg",
+                         "index": 1, "x": 15, "y": 5})
+        rings = out["features"][3]["geometry"]["coordinates"]
+        assert rings[0] == [[0, 0], [10, 0], [15, 5], [10, 10]]
+        assert rings[1] == [[4, 4], [6, 4], [6, 6]]  # hole untouched
+
+    def test_polygon_closing_edge_appends_to_the_ring(self):
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_pg",
+                         "index": 2, "x": 5, "y": 15})
+        rings = out["features"][3]["geometry"]["coordinates"]
+        assert rings[0] == [[0, 0], [10, 0], [10, 10], [5, 15]]
+
+    def test_polygon_inserts_on_a_hole_ring_by_flat_segment_index(self):
+        # segment 4 is the hole ring's second edge (the outer ring takes
+        # segments 0..2, its closing edge included)
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_pg",
+                         "index": 4, "x": 8, "y": 5})
+        rings = out["features"][3]["geometry"]["coordinates"]
+        assert rings[0] == [[0, 0], [10, 0], [10, 10]]  # outer untouched
+        assert rings[1] == [[4, 4], [6, 4], [8, 5], [6, 6]]
+
+    def test_polygon_hole_closing_edge_appends_to_the_hole(self):
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_pg",
+                         "index": 5, "x": 5, "y": 8})
+        rings = out["features"][3]["geometry"]["coordinates"]
+        assert rings[1] == [[4, 4], [6, 4], [6, 6], [5, 8]]
+
+    def test_multipolygon_inserts_on_the_second_island(self):
+        # segment 3 is island 2's first edge (island 1 takes 0..2)
+        out = apply_edit(_av_doc(),
+                        {"op": "add_vertex", "id": "av_mpt",
+                         "index": 3, "x": 20, "y": 15})
+        islands = out["features"][4]["geometry"]["coordinates"]
+        assert islands[0] == [[[0, 0], [5, 0], [5, 5]]]  # island 1
+        assert islands[1][0] == [[20, 20], [20, 15], [25, 20], [25, 25]]
+
+    def test_insert_preserves_id_and_properties(self):
+        doc = _av_doc()
+        doc["features"][0]["properties"] = {"label": "nucleus"}
+        out = apply_edit(doc,
+                        {"op": "add_vertex", "id": "av_ls",
+                         "index": 0, "x": 3, "y": 4})
+        assert out["features"][2]["id"] == "av_ls"
+        assert out["features"][0]["properties"] == {"label": "nucleus"}
+
+    def test_input_is_never_mutated_and_other_features_kept(self):
+        doc = _av_doc()
+        snapshot = copy.deepcopy(doc)
+        out = apply_edit(doc,
+                        {"op": "add_vertex", "id": "av_pg",
+                         "index": 0, "x": 1, "y": 1})
+        assert doc == snapshot
+        assert out is not doc
+        assert [f["id"] for f in out["features"]] == \
+            ["av_p", "av_mp", "av_ls", "av_pg", "av_mpt"]
+        # untouched features are shared with the input
+        assert out["features"][0] is doc["features"][0]
+        assert out["features"][3]["geometry"]["coordinates"][1] is \
+            doc["features"][3]["geometry"]["coordinates"][1]
+
+    def test_replay_is_a_noop_returning_the_input_unchanged(self):
+        doc = _av_doc()
+        cmd = {"op": "add_vertex", "id": "av_ls", "index": 0,
+               "x": 2, "y": 3}
+        once = apply_edit(doc, cmd)
+        # the inserted position now sits at the segment's far end: the
+        # replay classifies as 'noop' and the input is returned as-is
+        assert apply_edit(once, cmd) is once
+        # ...including the closing-edge variant (the appended position
+        # replays against the grown ring)
+        once2 = apply_edit(doc,
+                          {"op": "add_vertex", "id": "av_pg",
+                           "index": 2, "x": 5, "y": 15})
+        assert apply_edit(once2,
+                         {"op": "add_vertex", "id": "av_pg",
+                          "index": 2, "x": 5, "y": 15}) is once2
+
+    def test_unknown_id_is_none(self):
+        assert apply_edit(
+            _av_doc(),
+            {"op": "add_vertex", "id": "nope", "index": 0, "x": 0, "y": 0},
+        ) is None
+
+    @pytest.mark.parametrize("index", [-1, 1])  # av_ls has one segment
+    def test_out_of_range_index_is_a_value_error(self, index):
+        with pytest.raises(ValueError, match="out of range"):
+            apply_edit(_av_doc(),
+                      {"op": "add_vertex", "id": "av_ls",
+                       "index": index, "x": 2, "y": 3})
+
+    @pytest.mark.parametrize(
+        "fid",  # points have no segments to split
+        ["av_p", "av_mp"],
+    )
+    def test_points_have_no_segments(self, fid):
+        with pytest.raises(ValueError, match="out of range"):
+            apply_edit(_av_doc(),
+                      {"op": "add_vertex", "id": fid,
+                       "index": 0, "x": 2, "y": 3})
+
+    def test_insert_on_top_of_an_existing_vertex_is_refused(self):
+        doc = _av_doc()
+        # the segment's near end
+        with pytest.raises(ValueError, match="on top of"):
+            apply_edit(doc, {"op": "add_vertex", "id": "av_ls",
+                             "index": 0, "x": 0, "y": 0})
+        # the ring's closing edge: both of its ends are existing vertices
+        with pytest.raises(ValueError, match="on top of"):
+            apply_edit(doc, {"op": "add_vertex", "id": "av_pg",
+                             "index": 2, "x": 0, "y": 0})
+        with pytest.raises(ValueError, match="on top of"):
+            apply_edit(doc, {"op": "add_vertex", "id": "av_pg",
+                             "index": 2, "x": 10, "y": 10})
+
+    def test_far_endpoint_insert_is_the_replay_noop(self):
+        doc = _av_doc()
+        # a point on the segment's far end is the replay signature (the
+        # insertion spot already holds it) — a no-op, not a refusal
+        out = apply_edit(doc,
+                        {"op": "add_vertex", "id": "av_ls",
+                         "index": 0, "x": 4, "y": 0})
+        assert out is doc
+
+    def test_degenerate_insert_is_refused(self):
+        doc = fc(feat({"type": "Polygon",
+                      "coordinates": [[[0, 0], [10, 0], [10, 1]]]},
+                 fid="av_deg"))
+        # the insert makes the ring a zero-area bowtie
+        with pytest.raises(ValueError, match="degenerate"):
+            apply_edit(doc, {"op": "add_vertex", "id": "av_deg",
+                             "index": 0, "x": 5, "y": 1})
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            {"op": "add_vertex", "id": "av_ls"},  # missing index/x/y
+            {"op": "add_vertex", "id": "av_ls", "index": 0, "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": True,
+             "x": 2, "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": 0.0,
+             "x": 2, "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": "0",
+             "x": 2, "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": 0,
+             "x": float("nan"), "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": 0,
+             "x": float("inf"), "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": 0,
+             "x": "2", "y": 3},
+            {"op": "add_vertex", "id": "av_ls", "index": 0,
+             "x": 2, "y": [3]},
+        ],
+    )
+    def test_malformed_add_vertex_is_a_value_error(self, cmd):
+        with pytest.raises(ValueError):
+            apply_edit(_av_doc(), cmd)
 
 

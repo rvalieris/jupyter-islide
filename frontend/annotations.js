@@ -29,6 +29,12 @@
  * addresses (the JS twin of Python's apply_edit walk); `hitTestVertex`
  * finds the grabbable position under a screen point; `withMovedVertex`
  * previews a moved vertex locally (pure — Python stays the authority);
+ * `hitTestSegment` finds the feature segment near a screen point and
+ * reports it with the raw click as the `add_vertex` insert position
+ * (the shape bulges toward the click);
+ * `withAddedVertex` previews an inserted vertex locally (the JS twin of
+ * Python's `add_vertex` walk); `addedVertexIndex` maps a flat segment
+ * index to the flat position index the inserted position will have;
  * `drawVertexHandles` draws the draggable handles (a selected feature's
  * vertices, and a draft's vertices via the polydraw state).
  *
@@ -51,9 +57,16 @@ export const SELECTED_STROKE_WIDTH = 3;
 export const POINT_HIT_RADIUS = POINT_RADIUS + HALO_EXTRA + 2; // ~8 px
 export const LINE_HIT_TOLERANCE = 6;
 // M6 vertex editing (screen px): the vertex-handle grab radius and the
-// handle body radius (a grabbed handle draws 1.5 px larger).
+// handle body radius (a grabbed handle draws 1.5 px larger); and the
+// click-to-insert segment tolerance (a still click that close to a
+// segment of the selected feature inserts a vertex at the click — the
+// shape bulges toward it; the hover preview uses the same test).
 export const VERTEX_PICK_RADIUS = 8;
 export const VERTEX_HANDLE_RADIUS = 3;
+export const SEGMENT_PICK_RADIUS = 320;
+// The "what will be drawn" dashed segments (the draft's closure, the
+// insert preview's split edges), screen px (dash, gap).
+export const DASH_PATTERN = [6, 4];
 
 /**
  * Draw every feature of the annotation document under `transform` onto
@@ -452,6 +465,101 @@ function movedRingsGeometry(g, index, x, y) {
 }
 
 /**
+ * A new document with one position inserted in the geometry of the
+ * feature `id` — the geometry twin of Python's `add_vertex` (same
+ * canonical flat segment order: a LineString's `n` positions give `n - 1`
+ * segments; a ring of `n` positions gives `n` segments, the last being
+ * the closing edge). Pure: the input is never mutated and the same
+ * document is returned when the feature or the segment does not exist
+ * (nothing to preview).
+ */
+export function withAddedVertex(annotations, id, segment, x, y) {
+  const doc = annotations;
+  if (!doc || !Array.isArray(doc.features)) return doc;
+  const i = doc.features.findIndex((f) => f && f.id === id);
+  if (i < 0) return doc;
+  const f = doc.features[i];
+  const g = f.geometry;
+  if (!g || typeof g !== 'object' || !Array.isArray(g.coordinates)) return doc;
+  let newGeom = null;
+  if (g.type === 'LineString') {
+    if (
+      Number.isInteger(segment) &&
+      segment >= 0 &&
+      segment < g.coordinates.length - 1
+    ) {
+      newGeom = {
+        ...g,
+        coordinates: [
+          ...g.coordinates.slice(0, segment + 1).map((p) => [p[0], p[1]]),
+          [x, y],
+          ...g.coordinates.slice(segment + 1).map((p) => [p[0], p[1]]),
+        ],
+      };
+    }
+  } else if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+    newGeom = addedRingsGeometry(g, segment, x, y);
+  }
+  if (!newGeom) return doc;
+  const features = doc.features.slice();
+  features[i] = { ...f, geometry: newGeom };
+  return { ...doc, features };
+}
+
+/**
+ * A Polygon/MultiPolygon's new geometry with one position inserted at
+ * flat segment `seg` (rings walked in canonical order; a ring's closing
+ * edge is its last segment, and its position is appended to the ring),
+ * or null when `seg` does not address a segment.
+ */
+function addedRingsGeometry(g, seg, x, y) {
+  const rings = [];
+  if (!Array.isArray(g.coordinates)) return null;
+  if (g.type === 'Polygon') {
+    for (const ring of g.coordinates) {
+      if (!Array.isArray(ring)) return null;
+      rings.push(ring);
+    }
+  } else {
+    for (const island of g.coordinates) {
+      if (!Array.isArray(island)) return null;
+      for (const ring of island) {
+        if (!Array.isArray(ring)) return null;
+        rings.push(ring);
+      }
+    }
+  }
+  let off = 0;
+  for (let r = 0; r < rings.length; r++) {
+    const n = rings[r].length;
+    if (Number.isInteger(seg) && seg >= off && seg < off + n) {
+      const local = seg - off;
+      const ring = rings[r];
+      const newRing =
+        local === n - 1
+          ? [...ring.map((p) => [p[0], p[1]]), [x, y]]
+          : [
+              ...ring.slice(0, local + 1).map((p) => [p[0], p[1]]),
+              [x, y],
+              ...ring.slice(local + 1).map((p) => [p[0], p[1]]),
+            ];
+      const newRings = rings.map((ring2, ri) => (ri === r ? newRing : ring2));
+      if (g.type === 'Polygon') return { ...g, coordinates: newRings };
+      const coords = [];
+      let k = 0;
+      for (const island of g.coordinates) {
+        const nn = island.length;
+        coords.push(newRings.slice(k, k + nn));
+        k += nn;
+      }
+      return { ...g, coordinates: coords };
+    }
+    off += n;
+  }
+  return null;
+}
+
+/**
  * The flat index of the feature position within `VERTEX_PICK_RADIUS`
  * screen px of the screen point (x, y) (the nearest first), or null
  * (a miss). Pure.
@@ -469,6 +577,100 @@ export function hitTestVertex(feature, transform, x, y) {
     }
   });
   return best;
+}
+
+/**
+ * A feature's segments in the flat canonical order an `add_vertex`
+ * `index` addresses (DESIGN.md §6.7, the JS twin of Python's walk):
+ * a LineString's consecutive pairs (`n - 1`); a Polygon's /
+ * MultiPolygon's rings in canonical order, `n` segments per ring of `n`
+ * positions (the closing edge back to the ring's first position counts).
+ * `[]` for Point / MultiPoint (no segments) and for a malformed geometry.
+ */
+function segmentEndpoints(g) {
+  if (!g || typeof g !== 'object' || !Array.isArray(g.coordinates)) return [];
+  const t = g.type;
+  if (t === 'LineString') {
+    if (!g.coordinates.length || !g.coordinates.every(isPosition)) return [];
+    const out = [];
+    for (let i = 0; i < g.coordinates.length - 1; i++) {
+      out.push([g.coordinates[i], g.coordinates[i + 1]]);
+    }
+    return out;
+  }
+  if (t === 'Polygon' || t === 'MultiPolygon') {
+    const out = [];
+    const pushRing = (ring) => {
+      if (!isRing(ring)) return false;
+      for (let i = 0; i < ring.length; i++) {
+        out.push([ring[i], ring[(i + 1) % ring.length]]);
+      }
+      return true;
+    };
+    if (t === 'Polygon') {
+      for (const ring of g.coordinates) {
+        if (!pushRing(ring)) return [];
+      }
+    } else {
+      for (const island of g.coordinates) {
+        if (!Array.isArray(island)) return [];
+        for (const ring of island) {
+          if (!pushRing(ring)) return [];
+        }
+      }
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * The feature segment within `SEGMENT_PICK_RADIUS` screen px of the
+ * screen point (x, y) (the nearest first, the distance to the segment's
+ * line — screen-space, so the tolerance is zoom-constant), as
+ * `{segment, x, y}`: the flat segment index and the *raw click* in
+ * level-0 px — the inserted vertex lands at the click, so the shape
+ * bulges toward it (outward or inward, where the click is) — or null
+ * (a miss). Pure.
+ */
+export function hitTestSegment(feature, transform, x, y) {
+  const segs = segmentEndpoints(feature && feature.geometry);
+  let best = null;
+  let bestD2 = SEGMENT_PICK_RADIUS * SEGMENT_PICK_RADIUS;
+  segs.forEach(([a, b], i) => {
+    const [ax, ay] = math.l0ToScreen(transform, a[0], a[1]);
+    const [bx, by] = math.l0ToScreen(transform, b[0], b[1]);
+    const dx = bx - ax, dy = by - ay;
+    const l2 = dx * dx + dy * dy;
+    let u = l2 === 0 ? 0 : ((x - ax) * dx + (y - ay) * dy) / l2;
+    u = Math.max(0, Math.min(1, u));
+    const px = ax + u * dx, py = ay + u * dy;
+    const d2 = screenDist2(px, py, x, y);
+    if (d2 <= bestD2) {
+      bestD2 = d2;
+      best = { i, px, py };
+    }
+  });
+  if (!best) return null;
+  const [lx, ly] = math.screenToL0(transform, x, y);
+  return { segment: best.i, x: lx, y: ly };
+}
+
+/**
+ * The flat canonical position index a successful `withAddedVertex` /
+ * Python `add_vertex` put (or would put) at flat segment `segment` —
+ * always `segment + 1` (an inserted position lands just past the
+ * segment's start position; a ring's closing edge appends at `n`, which
+ * is also `segment + 1`), or `null` if `segment` does not address a
+ * segment of the feature (out of range, Point / MultiPoint, malformed
+ * geometry). Pure.
+ */
+export function addedVertexIndex(feature, segment) {
+  const segs = segmentEndpoints(feature && feature.geometry);
+  if (!Number.isInteger(segment) || segment < 0 || segment >= segs.length) {
+    return null;
+  }
+  return segment + 1;
 }
 
 /**
@@ -501,6 +703,47 @@ export function drawVertexHandles(
     ctx.lineWidth = 1.5;
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/**
+ * The click-to-insert hover preview (DESIGN.md §6.7): for the segment a
+ * `hitTestSegment` hit would insert into, the two edges it would become
+ * (dashed, the draft's "what will be drawn" style, from each segment
+ * endpoint to the clicked point) and the ghost vertex handle at the
+ * clicked point (the new vertex's handle, before the vertex is there).
+ * Screen-space, drawn on the annotation overlay after the handles.
+ */
+export function drawInsertPreview(ctx, transform, feature, hit) {
+  const segs = segmentEndpoints(feature && feature.geometry);
+  if (!hit || !Number.isInteger(hit.segment) || hit.segment < 0
+      || hit.segment >= segs.length) {
+    return;
+  }
+  const [a, b] = segs[hit.segment];
+  const [ax, ay] = math.l0ToScreen(transform, a[0], a[1]);
+  const [bx, by] = math.l0ToScreen(transform, b[0], b[1]);
+  const [px, py] = math.l0ToScreen(transform, hit.x, hit.y);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(px, py);
+  ctx.moveTo(px, py);
+  ctx.lineTo(bx, by);
+  ctx.setLineDash(DASH_PATTERN);
+  ctx.strokeStyle = DEFAULT_COLOR;
+  ctx.lineWidth = STROKE_WIDTH;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(px, py, VERTEX_HANDLE_RADIUS, 0, 2 * Math.PI);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.strokeStyle = SELECTED_COLOR;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
   ctx.restore();
 }
 

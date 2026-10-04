@@ -167,9 +167,9 @@ class SlideViewer(widgets.DOMWidget):
       the tiles. Headless, the viewport is re-based directly.
     * M4: ``annotation_edit`` (JS->Py last-event slot, DESIGN.md §6.5)
       carries one view edit command (``delete`` / ``set_label`` /
-      ``set_color`` / ``set_vertex``); the Python observer applies it
-      with the pure ``apply_edit`` and pushes the updated ``annotations``
-      set.
+      ``set_color`` / ``set_vertex`` / ``add_vertex``); the Python
+      observer applies it with the pure ``apply_edit`` and pushes the
+      updated ``annotations`` set.
     """
 
     # -- widget identity (must match the JS module registered by the
@@ -224,7 +224,7 @@ class SlideViewer(widgets.DOMWidget):
     # canonical document.
     annotations = Dict(default_value=_EMPTY_ANNOTATION_DOC).tag(sync=True)
     # M4: the last issued annotation edit command (JS -> Py): a
-    # {"op": "delete" | "set_label" | "set_color" | "set_vertex",
+    # {"op": "delete" | "set_label" | "set_color" | "set_vertex" | "add_vertex",
     # "id", ...} object or None (no command yet; DESIGN.md §6.5). The
     # Python observer applies it to `annotations` (pure apply_edit) and
     # pushes the updated set; an unknown/stale id leaves the set untouched
@@ -666,6 +666,27 @@ class SlideViewer(widgets.DOMWidget):
             "index": int(index), "x": float(x), "y": float(y),
         }
 
+    def add_annotation_vertex(
+        self, feature_id: str, index: int, x: float, y: float
+    ) -> None:
+        """Add one position to the annotation with the given id
+        (DESIGN.md §6.7) — the same edit a click on the selected
+        feature's edge in the view issues: a position of level-0 px
+        ``(x, y)`` is inserted at flat ``index`` in the feature's
+        canonical segment order (a LineString's ``n`` positions give
+        ``n - 1`` segments; a Polygon ring of ``n`` positions gives ``n``
+        segments — the last being the closing edge back to the ring's
+        first position; a Polygon's rings in order, a MultiPolygon's
+        islands in order, rings within an island). An id that does not
+        address a feature of the current set is ignored (the status
+        reports it); an out-of-range ``index``, a position on top of an
+        existing vertex, or an insertion that would degenerate the
+        geometry is refused (the set is unchanged)."""
+        self.annotation_edit = {
+            "op": "add_vertex", "id": feature_id,
+            "index": int(index), "x": float(x), "y": float(y),
+        }
+
     # --------------------------------------- M3: drawn polygons (JS -> Py)
     # (the M4 edit-command observer is registered with the M3 one above;
     # both apply to `annotations` and push the updated set)
@@ -734,9 +755,10 @@ class SlideViewer(widgets.DOMWidget):
         try:
             doc = apply_edit(self.annotations, cmd)
         except ValueError as e:
-            # A malformed wire payload, or a vertex move Python refused
-            # (bad index, non-finite position, or the move would
-            # degenerate the geometry) — warn, keep state, and say so.
+            # A malformed wire payload, or a vertex move / insert Python
+            # refused (bad index, non-finite position, a coincident
+            # vertex, or the edit would degenerate the geometry) — warn,
+            # keep state, and say so.
             warnings.warn(f"islide: ignoring annotation edit: {e}", UserWarning)
             self.status = f"edit ignored: {e}"
             return
@@ -752,5 +774,6 @@ class SlideViewer(widgets.DOMWidget):
                 "set_label": "label",
                 "set_color": "color",
                 "set_vertex": "vertex",
+                "add_vertex": "vertex",
             }[cmd["op"]]
             self.status = f"edited #{fid} ({what})"

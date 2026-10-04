@@ -14,8 +14,12 @@
 import * as math from './tilemath.js';
 import {
   DEFAULT_COLOR, STROKE_WIDTH, POINT_RADIUS, HALO_EXTRA,
-  VERTEX_PICK_RADIUS,
+  VERTEX_PICK_RADIUS, DASH_PATTERN,
 } from './annotations.js';
+
+// The dashed style moved to annotations.js (shared with the M6 insert
+// preview); re-exported to keep this module's public API.
+export { DASH_PATTERN };
 
 export const MODE_IDLE = 'idle';
 export const MODE_DRAWING = 'drawing';
@@ -25,9 +29,6 @@ export const MODE_DRAWING = 'drawing';
  * (a draft vertex in drawing mode); at or beyond it, the gesture is a pan.
  */
 export const CLICK_THRESHOLD_PX = 4;
-
-/** Dashed closure segments, screen px (dash, gap). */
-export const DASH_PATTERN = [6, 4];
 
 const _DEGENERATE_AREA = 1e-6; // level-0 px^2 (matches annotations.py)
 

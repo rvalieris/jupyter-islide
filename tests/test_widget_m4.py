@@ -2,17 +2,19 @@
 
 Covers: the Py<->JS `annotation_edit` wire — the JS->Py last-event slot
 holding the last issued edit command ({op: "delete" | "set_label" |
-"set_color" | "set_vertex", id, ...}) that the Python observer applies to
-the canonical annotation document (DESIGN.md §6.5): known ids applied
-(status "deleted #<id>" / "edited #<id> (label|color|vertex)"), unknown or
-stale ids a no-op with the "edit ignored: unknown annotation id" status and
-no warning, malformed or refused commands (a set_vertex with a bad index or
-a move that would degenerate the geometry) a warning with no state change
-and an "edit ignored: ..." status, and the last-event-slot semantics: the
-trait keeps the last issued command (re-attach replays it, idempotent over
-the pushed set, like `last_polygon`). Plus the public API
-(delete_annotation / set_annotation_label / set_annotation_color /
-set_annotation_vertex) issuing commands through the trait.
+"set_color" | "set_vertex" | "add_vertex", id, ...}) that the Python
+observer applies to the canonical annotation document (DESIGN.md §6.5): known
+ids applied (status "deleted #<id>" / "edited #<id> (label|color|vertex)"),
+unknown or stale ids a no-op with the "edit ignored: unknown annotation id"
+status and no warning, malformed or refused commands (a set_vertex with a bad
+index or a move that would degenerate the geometry; an add_vertex with a bad
+segment index, on top of an existing vertex, or degenerating the geometry)
+a warning with no state change and an "edit ignored: ..." status, and the
+last-event-slot semantics: the trait keeps the last issued command
+(re-attach replays it, idempotent over the pushed set, like `last_polygon`).
+Plus the public API (delete_annotation / set_annotation_label /
+set_annotation_color / set_annotation_vertex / add_annotation_vertex)
+issuing commands through the trait.
 """
 from __future__ import annotations
 
@@ -233,6 +235,69 @@ def test_public_api_set_annotation_vertex(viewer):
         viewer.set_annotation_vertex("a1", 1, 1.5, 2.5)
     assert viewer.annotations == before
     assert viewer.status.startswith("edit ignored: set_vertex")
+
+
+# ----------------------------------------------- add_vertex (vertex insert)
+def test_annotation_edit_add_vertex_applies(viewer):
+    _seed_polygon(viewer)
+    cmd = {"op": "add_vertex", "id": "a1", "index": 0, "x": 2, "y": -1}
+    viewer.annotation_edit = _as_json(cmd)  # as the comm channel would deliver
+    assert viewer.annotation_edit == cmd
+    assert viewer.annotations["features"][0]["geometry"]["coordinates"] == [
+        [[0.0, 0.0], [2.0, -1.0], [4.0, 0.0], [4.0, 4.0]]
+    ]
+    assert viewer.status == "edited #a1 (vertex)"
+    # last-event slot: a replay is the no-op over the pushed set
+    before = viewer.annotations
+    viewer.annotation_edit = cmd
+    assert viewer.annotations == before
+
+
+def test_annotation_edit_add_vertex_unknown_id_is_a_silent_noop(viewer):
+    _seed_polygon(viewer)
+    before = viewer.annotations
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        viewer.annotation_edit = {"op": "add_vertex", "id": "a9",
+                                  "index": 0, "x": 1, "y": 1}
+    assert not rec
+    assert viewer.annotations == before
+    assert viewer.status == "edit ignored: unknown annotation id"
+
+
+def test_annotation_edit_add_vertex_refusals_keep_state(viewer):
+    _seed_polygon(viewer)
+    before = viewer.annotations
+    with pytest.warns(UserWarning):
+        # out of range: the triangle has segments 0..2 (2 = closing edge)
+        viewer.annotation_edit = {"op": "add_vertex", "id": "a1",
+                                  "index": 3, "x": 1, "y": 1}
+    assert viewer.annotations == before
+    assert viewer.status.startswith("edit ignored: add_vertex")
+    with pytest.warns(UserWarning):
+        # on top of an existing vertex (the segment's near end)
+        viewer.annotation_edit = {"op": "add_vertex", "id": "a1",
+                                  "index": 0, "x": 0, "y": 0}
+    assert viewer.annotations == before
+    assert viewer.status.startswith("edit ignored: add_vertex")
+
+
+def test_public_api_add_annotation_vertex(viewer):
+    _seed_polygon(viewer)
+    viewer.add_annotation_vertex("a1", 1, 5, 2)
+    assert viewer.annotation_edit == {
+        "op": "add_vertex", "id": "a1", "index": 1, "x": 5.0, "y": 2.0}
+    assert viewer.annotations["features"][0]["geometry"]["coordinates"] == [
+        [[0.0, 0.0], [4.0, 0.0], [5.0, 2.0], [4.0, 4.0]]
+    ]
+    assert viewer.status == "edited #a1 (vertex)"
+
+    before = viewer.annotations
+    with pytest.warns(UserWarning):
+        # the closing edge's far end is an existing vertex: refused
+        viewer.add_annotation_vertex("a1", 3, 0, 0)
+    assert viewer.annotations == before
+    assert viewer.status.startswith("edit ignored: add_vertex")
 
 
 def test_annotation_edit_idempotent_set_ops(viewer):

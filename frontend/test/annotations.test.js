@@ -9,11 +9,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   drawAnnotations,
+  drawInsertPreview,
   drawVertexHandles,
   featurePositions,
   hitTest,
   hitTestVertex,
+  hitTestSegment,
   withMovedVertex,
+  withAddedVertex,
+  addedVertexIndex,
   STROKE_WIDTH,
   POINT_RADIUS,
   HALO_EXTRA,
@@ -21,8 +25,11 @@ import {
   LINE_HIT_TOLERANCE,
   SELECTED_COLOR,
   SELECTED_STROKE_WIDTH,
+  DEFAULT_COLOR,
   VERTEX_HANDLE_RADIUS,
   VERTEX_PICK_RADIUS,
+  SEGMENT_PICK_RADIUS,
+  DASH_PATTERN,
 } from '../annotations.js';
 
 function mockCtx() {
@@ -41,6 +48,7 @@ function mockCtx() {
     arc: rec('arc'),
     fill: rec('fill'),
     stroke: rec('stroke'),
+    setLineDash: rec('setLineDash'),
     fillText: rec('fillText'),
     strokeText: rec('strokeText'),
   };
@@ -568,4 +576,194 @@ test('drawVertexHandles: empty positions draw nothing', () => {
   const ctx = mockCtx();
   drawVertexHandles(ctx, T, [], -1);
   assert.equal(ctx.ops.length, 0);
+});
+
+// -------------------------------------------- M6 (click-to-insert a vertex)
+
+test('withAddedVertex: linestring midpoint; input untouched', () => {
+  const d = doc(
+    feat({ type: 'LineString', coordinates: [[0, 0], [10, 0]] }, {}, 'l'));
+  const out = withAddedVertex(d, 'l', 0, 4, 7);
+  assert.deepEqual(
+    out.features[0].geometry.coordinates, [[0, 0], [4, 7], [10, 0]]);
+  // the input document is never mutated
+  assert.deepEqual(d.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
+});
+
+test('withAddedVertex: polygon outer ring, hole via flat segment index', () => {
+  const d = doc(feat(PG_HOLE, {}, 'pg'));
+  // segment 1 = between (100, 0) and (100, 100)
+  const out = withAddedVertex(d, 'pg', 1, 100, 50);
+  const rings = out.features[0].geometry.coordinates;
+  assert.deepEqual(
+    rings[0], [[0, 0], [100, 0], [100, 50], [100, 100], [0, 100]]);
+  assert.deepEqual(rings[1], [[20, 20], [40, 20], [40, 40], [20, 40]]);
+  // segment 5 = the hole's (40, 20) -> (40, 40) (the outer ring takes 0..3)
+  const out2 = withAddedVertex(d, 'pg', 5, 41, 30);
+  assert.deepEqual(
+    out2.features[0].geometry.coordinates[1],
+    [[20, 20], [40, 20], [41, 30], [40, 40], [20, 40]]);
+});
+
+test('withAddedVertex: the closing edge appends at the ring end', () => {
+  const d = doc(feat(PG_HOLE, {}, 'pg'));
+  // segment 3 = (0, 100) -> (0, 0)
+  const out = withAddedVertex(d, 'pg', 3, -20, 50);
+  assert.deepEqual(out.features[0].geometry.coordinates[0],
+    [[0, 0], [100, 0], [100, 100], [0, 100], [-20, 50]]);
+});
+
+test('withAddedVertex: multipolygon islands in order', () => {
+  const d = doc(feat(MPOLY, {}, 'mp'));
+  // island 1 has segments 0..2; segment 4 = island 2's (300, 200) -> (300, 300)
+  const out = withAddedVertex(d, 'mp', 4, 301, 250);
+  const islands = out.features[0].geometry.coordinates;
+  assert.equal(islands.length, 2);
+  assert.deepEqual(islands[0], [[[0, 0], [100, 0], [100, 100]]]);
+  assert.deepEqual(
+    islands[1], [[[200, 200], [300, 200], [301, 250], [300, 300]]]);
+});
+
+test('withAddedVertex: unknown id, bad segment, no segments: same doc', () => {
+  const d = doc(
+    feat(point(1, 2), {}, 'p'),
+    feat({ type: 'LineString', coordinates: [[0, 0], [10, 0]] }, {}, 'l'),
+    feat(PG_HOLE, {}, 'pg'));
+  assert.equal(withAddedVertex(d, 'nope', 0, 0, 0), d);
+  assert.equal(withAddedVertex(d, 'p', 0, 0, 0), d);  // a point: 0 segments
+  assert.equal(withAddedVertex(d, 'l', 1, 0, 0), d);  // out of range
+  assert.equal(withAddedVertex(d, 'pg', 8, 0, 0), d); // the last segment is 7
+  assert.equal(withAddedVertex(d, 'pg', -1, 0, 0), d);
+  const bad = {}; // malformed document
+  assert.equal(withAddedVertex(bad, 'l', 0, 0, 0), bad);
+});
+
+test('hitTestSegment: closest segment, the raw click, radius inclusive',
+     () => {
+  // l0 (0,0) -> (100,0): screen y = 256, x 256..356
+  const f = feat(
+    { type: 'LineString', coordinates: [[0, 0], [100, 0]] }, {}, 'l');
+  // the insert position is the *raw click* (the shape bulges toward
+  // it), not the closest point on the line
+  const hit = hitTestSegment(f, T, 306, 259); // l0 (50, 3)
+  assert.equal(hit.segment, 0);
+  assert.ok(Math.abs(hit.x - 50) < 1e-9);
+  assert.ok(Math.abs(hit.y - 3) < 1e-9); // the click, 3 px off the line
+  // inclusive of the exact pick radius (SEGMENT_PICK_RADIUS, screen px)
+  assert.equal(hitTestSegment(f, T, 306, 256 + SEGMENT_PICK_RADIUS).segment, 0);
+  // one beyond: a miss
+  assert.equal(
+    hitTestSegment(f, T, 306, 256 + SEGMENT_PICK_RADIUS + 1), null);
+  // an off-end click still hits the segment (and inserts at the click)
+  const end = hitTestSegment(f, T, 356 + 3, 256); // l0 (103, 0)
+  assert.equal(end.segment, 0);
+  assert.ok(Math.abs(end.x - 103) < 1e-9);
+  // the nearer of two segments wins
+  const corner = feat({
+    type: 'LineString',
+    coordinates: [[0, 0], [100, 0], [100, 100]],
+  }, {}, 'c');
+  const onV = hitTestSegment(corner, T, 356, 261); // l0 (100, 5): on segment 1
+  assert.equal(onV.segment, 1);
+  assert.ok(Math.abs(onV.y - 5) < 1e-9);
+});
+
+test('hitTestSegment: the radius is in screen px (zoom-scaled)', () => {
+  const T2 = { cx: 0, cy: 0, zoom: 2, canvasW: 512, canvasH: 512 };
+  const f = feat(
+    { type: 'LineString', coordinates: [[0, 0], [100, 0]] }, {}, 'l');
+  // l0 (25, 0) -> screen (306, 256); the line is at screen y = 256
+  const hit = hitTestSegment(f, T2, 306, 256);
+  assert.equal(hit.segment, 0);
+  assert.ok(Math.abs(hit.x - 25) < 1e-9);
+  // 160.5 level-0 px away = 321 screen px: outside the 320 px radius
+  assert.equal(hitTestSegment(f, T2, 306, 256 + 321), null);
+  // 160 level-0 px away = 320 screen px: still a hit (inclusive)
+  assert.equal(hitTestSegment(f, T2, 306, 256 + 320).segment, 0);
+});
+
+test('hitTestSegment: polygon closing edge; points never hit', () => {
+  const pg = feat(PG_HOLE, {}, 'pg');
+  // the left edge (0, 100) -> (0, 0) is segment 3 (the closing edge)
+  const hit = hitTestSegment(pg, T, 256, 306); // l0 (0, 50)
+  assert.equal(hit.segment, 3);
+  assert.ok(Math.abs(hit.y - 50) < 1e-9);
+  const mp = feat(
+    { type: 'MultiPoint', coordinates: [[0, 0], [1, 1]] }, {}, 'mp');
+  assert.equal(hitTestSegment(mp, T, 256, 256), null);
+  assert.equal(hitTestSegment(feat(point(0, 0)), T, 256, 256), null);
+  const bad = { type: 'Feature', geometry: null, properties: {} };
+  assert.equal(hitTestSegment(bad, T, 256, 256), null);
+});
+
+test('drawInsertPreview: dashed split edges and the ghost vertex', () => {
+  // l0 (0,0) -> (100,0): screen A=(256,256), B=(356,256); insert point
+  // (50,0) -> P=(306,256).
+  const f = feat(
+    { type: 'LineString', coordinates: [[0, 0], [100, 0]] }, {}, 'l');
+  const ctx = mockCtx();
+  drawInsertPreview(ctx, T, f, { segment: 0, x: 50, y: 0 });
+  const ops = ctx.ops;
+  assert.equal(ops[0][0], 'save');
+  assert.equal(ops.at(-1)[0], 'restore');
+  // the two edges the segment would become: A->P, P->B (screen space)
+  const line = ops.filter(([m]) => m === 'moveTo' || m === 'lineTo')
+    .map(([, ...a]) => a);
+  assert.deepEqual(line, [[256, 256], [306, 256], [306, 256], [356, 256]]);
+  // dashed for the edge stroke only: on before, reset after
+  const dashSets = ops.filter(([m]) => m === 'setLineDash');
+  assert.equal(dashSets.length, 2);
+  assert.deepEqual(dashSets[0][1], DASH_PATTERN);
+  assert.deepEqual(dashSets[1][1], []);
+  const strokeIdx = ops.findIndex(([m]) => m === 'stroke');
+  assert.ok(ops.findIndex(([m]) => m === 'setLineDash') < strokeIdx);
+  assert.ok(
+    strokeIdx < ops.findIndex(([m, p]) => m === 'setLineDash' && !p.length));
+  // the dashed edges use the draft's "what will be drawn" style
+  const beforeStroke = ops.slice(0, strokeIdx);
+  assert.ok(beforeStroke.some(
+    ([m, v]) => m === 'set:strokeStyle' && v === DEFAULT_COLOR));
+  assert.ok(beforeStroke.some(
+    ([m, v]) => m === 'set:lineWidth' && v === STROKE_WIDTH));
+  // the final state is the ghost's handle style (white body, accent ring)
+  assert.equal(ctx.state.fillStyle, '#ffffff');
+  assert.equal(ctx.state.strokeStyle, SELECTED_COLOR);
+  // the ghost vertex handle at the clicked point
+  const arcs = ops.filter(([m]) => m === 'arc');
+  assert.equal(arcs.length, 1);
+  assert.deepEqual(
+    arcs[0], ['arc', 306, 256, VERTEX_HANDLE_RADIUS, 0, 2 * Math.PI]);
+});
+
+test('drawInsertPreview: a miss draws nothing', () => {
+  const f = feat(
+    { type: 'LineString', coordinates: [[0, 0], [100, 0]] }, {}, 'l');
+  for (const hit of [null, undefined, { segment: 1, x: 0, y: 0 },
+                    { segment: -1, x: 0, y: 0 }, { segment: 0.5, x: 0, y: 0 }]) {
+    const ctx = mockCtx();
+    drawInsertPreview(ctx, T, f, hit);
+    assert.deepEqual(ctx.ops, []);
+  }
+  // a point has no segments
+  const ctx = mockCtx();
+  drawInsertPreview(ctx, T, feat(point(0, 0), {}, 'p'), { segment: 0, x: 0, y: 0 });
+  assert.deepEqual(ctx.ops, []);
+});
+
+test('addedVertexIndex: segment + 1, null for non-segments', () => {
+  const l = feat(
+    { type: 'LineString', coordinates: [[0, 0], [10, 0]] }, {}, 'l');
+  assert.equal(addedVertexIndex(l, 0), 1);
+  assert.equal(addedVertexIndex(l, 1), null); // a 2-position line has 1 segment
+  const pg = feat(PG_HOLE, {}, 'pg');
+  assert.equal(addedVertexIndex(pg, 0), 1);
+  assert.equal(addedVertexIndex(pg, 7), 8); // the hole's closing edge
+  assert.equal(addedVertexIndex(pg, 8), null); // out of range
+  assert.equal(addedVertexIndex(pg, -1), null);
+  assert.equal(addedVertexIndex(pg, 0.5), null);
+  assert.equal(addedVertexIndex(pg, 'x'), null);
+  const p = feat(point(0, 0), {}, 'p');
+  assert.equal(addedVertexIndex(p, 0), null); // a point has 0 segments
+  const bad = { type: 'Feature', geometry: null, properties: {} };
+  assert.equal(addedVertexIndex(bad, 0), null);
 });

@@ -146,7 +146,8 @@ while a shape is selected the toolbar enables **del** (remove the shape),
 Esc cancels; labels render on lines/polygons too, at the first vertex) and
 **color** (stroke + fill pickers with a clear-fill checkbox; closing a
 picker commits the full `(color, fill)` pair). The **annotate** button
-toggles the M3 drawing mode (**A** stays the keyboard alias); entering
+toggles the M3 drawing mode (**A** stays the keyboard alias) and is
+highlighted while the mode is active; entering
 drawing mode keeps the selection (M6: a selected feature's vertices stay
 grabbable while drawing). The view issues each edit as an
 `annotation_edit` command; Python applies it to the canonical document and
@@ -187,6 +188,22 @@ v.set_annotation_vertex("a1", 0, 1234, 567)   # move vertex #0 (level-0 px)
 order, then position within the ring; `MultiPolygon` uses island order,
 then ring order, then position within the ring.
 
+New vertices can also be **inserted** (drawing mode): with a saved
+feature selected, a **left click** within 320 px of one of its edges adds
+a vertex at the click position on the nearest segment (the shape
+bulges toward the click — outward or inward) — as the cursor nears an
+edge, a dashed preview of the two edges the click would create, with
+the new vertex's handle at its spot, shows what will happen. The click is
+committed as an `annotation_edit` command `add_vertex`, whose `index`
+is the *flat segment index* — the same walk, a segment instead of a
+position (a ring's last segment is its closing edge). Python re-validates
+the same way: an insert on top of an existing vertex or one that would
+degenerate the geometry is refused (`edit ignored: …`):
+
+```python
+v.add_annotation_vertex("a1", 0, 1234, 567)   # insert into segment #0 (level-0 px)
+```
+
 The viewer still has no per-shape move/resize, no multi-select, no
 hover/tooltips, and no undo — the reset paths are `clear_annotations()`
 or a re-import.
@@ -220,7 +237,7 @@ islide/
                chunked into grid-anchored 1024-px blocks, center-first (M5)
   annotations.py  GeoJSON document -> canonical annotation document (pure)
                  + apply_edit (M4/M6: the pure delete/set_label/set_color/
-                              set_vertex ops)
+                              set_vertex/add_vertex ops)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read per chunk, cropped)
@@ -232,7 +249,8 @@ frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   compositor.js  pure canvas scene drawing (per-level alpha, M5)
   blend.js       level cross-fade math (M5)
   annotations.js pure annotation overlay drawing + hit testing (M2/M4)
-                 + vertex handles / set_vertex preview (M6)
+                 + vertex handles / set_vertex preview / segment hit-test
+                 + add_vertex preview (M6)
   polydraw.js    polygon draw state machine + draft preview (M3)
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)
