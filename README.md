@@ -146,8 +146,8 @@ while a shape is selected the toolbar enables **del** (remove the shape),
 Esc cancels; labels render on lines/polygons too, at the first vertex) and
 **color** (stroke + fill pickers with a clear-fill checkbox; closing a
 picker commits the full `(color, fill)` pair). The **annotate** button
-toggles the M3 drawing mode (**A** stays the keyboard alias) and is
-highlighted while the mode is active; entering
+(the underlined "a" in its label hints the **A** alias) toggles the M3
+drawing mode and is highlighted while the mode is active; entering
 drawing mode keeps the selection (M6: a selected feature's vertices stay
 grabbable while drawing). The view issues each edit as an
 `annotation_edit` command; Python applies it to the canonical document and

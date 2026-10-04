@@ -545,7 +545,8 @@ toolbar toggle button, **annotate** (pressed while drawing, which
 highlights it — see style/index.css): the visible entry point to the
 annotation tools. **A** stays the alias and the two
 drive the same mode state machine (§6.4) — the button only mirrors the
-mode in its pressed state.
+mode in its pressed state, and its label carries the keyboard-hint:
+the underlined "a" (a plain `<u>` around the first letter, view.js).
 
 **Selection (idle mode).** In no mode, a left click that is a click (not
 a drag — the same ≥ 4 CSS px threshold as M3) hit-tests the annotation

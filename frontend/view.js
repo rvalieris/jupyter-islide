@@ -101,7 +101,7 @@ export class SlideView extends DOMWidgetView {
       <div class="islide-toolbar">
         <button class="islide-btn" data-action="fit">fit</button>
         <button class="islide-btn" data-action="1:1">1:1</button>
-        <button class="islide-btn" data-action="annotate" aria-pressed="false">annotate</button>
+        <button class="islide-btn" data-action="annotate" aria-pressed="false"><u>a</u>nnotate</button>
         <button class="islide-btn" data-action="del" disabled>del</button>
         <button class="islide-btn" data-action="label" disabled>label</button>
         <button class="islide-btn" data-action="color" disabled>color</button>
