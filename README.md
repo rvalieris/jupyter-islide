@@ -3,31 +3,18 @@
 Interactive whole-slide pathology image viewer for Jupyter, backed by
 [OpenSlide](https://openslide.org/).
 
-Status: **M6** — see [DESIGN.md](DESIGN.md). Interactive canvas viewer
-(mouse pan/zoom, minimap, toolbar) backed by a Python tile pipeline. M5
-improves *feel*, not features: wide views are read as grid-anchored
-1024-px **chunks in center-first order** — the center chunk is pushed
-before the rest, so the most important tiles arrive first — and a change
-of the selected pyramid level **cross-fades** (the old level fades out
-over 300 ms while the new level draws at full opacity). No new traits,
-no wire-format change (`tiles` / `tile_geo` are exactly as before). The
-canvas view also carries a GeoJSON **annotation document** overlay
-(points, lines, polygons — level-0 slide px) that accepts
-**hand-drawn polygons** (the **annotate** button or **A**, left-click the
-vertices, **A** to save) and supports **editing existing shapes**: click
-to select, then **del** / **label** / **color** in the toolbar (or the
-same Python API), plus **dragging individual vertices** (M6) — the
-in-progress draft's while it's being drawn, and a selected saved
-feature's in either mode.
-
 ## Install
 
-Requires the `libopenslide` system library (conda:
-`mamba install -c conda-forge openslide`, or apt `libopenslide0`), then:
-
 ```bash
-pip install .          # from this repo (or: pip install jupyter-islide, once published)
+pip install jupyter-islide
 ```
+
+The package needs the `libopenslide` shared library at runtime. Install it
+any one of these ways:
+
+- **PyPI**: `pip install openslide-bin` — bundles `libopenslide`, no system package
+- **conda**: `mamba install -c conda-forge openslide`
+- **apt**: `libopenslide0`
 
 The release wheel **bundles the pre-built `frontend/` JupyterLab widget
 extension**, so a single `pip install` gives you both the Python API and the
@@ -85,7 +72,7 @@ Other constructor args: `canvas_w`, `tile_size`, `cache_max_mb` and
 `jpeg_quality` (tile JPEG quality, 1–95, default 85 — the minimap and the
 `read_crop` path are unaffected).
 
-**Annotations (M2, read-only).** Import a GeoJSON document — a file path or
+**Annotations (read-only).** Import a GeoJSON document — a file path or
 a parsed dict: a `FeatureCollection` of `{id, geometry, properties}`
 features (`Point`, `MultiPoint`, `LineString`, `Polygon`, `MultiPolygon`; a
 single `Feature` or a bare geometry is accepted too). The synced
@@ -122,7 +109,7 @@ another key or `transparent=None` to keep the image's alpha as-is. PNG
 transport keeps the alpha channel: a heatmap on a transparent background
 (e.g. matplotlib's default colormap) composites cleanly over the slide.
 
-**Drawing (M3).** The canvas view adds polygons by hand: click the canvas
+**Drawing.** The canvas view adds polygons by hand: click the canvas
 (for keyboard focus), press **A** (crosshair), **left-click** the
 vertices — dragging still pans and wheel zoom stays live, so the draft
 tracks the view — then press **A** to save or **Esc** to cancel. On save
@@ -138,7 +125,7 @@ v.annotations["features"]    # the appended polygon (fresh id, empty properties)
 ring = v.annotations["features"][-1]["geometry"]["coordinates"][0]
 ```
 
-**Editing (M4).** Existing shapes — imported or drawn — are editable in
+**Editing.** Existing shapes — imported or drawn — are editable in
 the view: in the idle mode a **left click** selects a shape (thick accent
 highlight; a miss deselects; pan/zoom/minimap keep the selection), and
 while a shape is selected the toolbar enables **del** (remove the shape),
@@ -146,10 +133,9 @@ while a shape is selected the toolbar enables **del** (remove the shape),
 Esc cancels; labels render on lines/polygons too, at the first vertex) and
 **color** (stroke + fill pickers with a clear-fill checkbox; closing a
 picker commits the full `(color, fill)` pair). The **annotate** button
-(the underlined "a" in its label hints the **A** alias) toggles the M3
-drawing mode and is highlighted while the mode is active; entering
-drawing mode keeps the selection (M6: a selected feature's vertices stay
-grabbable while drawing). The view issues each edit as an
+(the underlined "a" in its label hints the **A** alias) toggles the drawing mode and is highlighted while the mode is active;
+entering drawing mode keeps the selection (a selected feature's vertices
+stay grabbable while drawing). The view issues each edit as an
 `annotation_edit` command; Python applies it to the canonical document and
 pushes the whole updated set back, so `v.annotations` always reflects the
 edits. The same ops are available programmatically (ids from
@@ -164,7 +150,7 @@ v.set_annotation_color("a1", color="red", fill=None)  # None = default
 Unknown or stale ids are no-ops: the document is untouched and the status
 says `edit ignored:`.
 
-**Vertex editing (M6).** Individual vertices are draggable: the
+**Vertex editing.** Individual vertices are draggable: the
 in-progress draft's vertices while a polygon is being drawn (drawing
 mode), and a selected saved feature's vertices in either mode. Each
 vertex draws as a small white circle; a **left click** near a circle
@@ -234,9 +220,9 @@ select/label/color/delete) for a walkthrough.
 islide/
   viewport.py  SlideMeta + Viewport (pure)
   plan.py      viewport -> read plan: one region read, sliced into tiles,
-               chunked into grid-anchored 1024-px blocks, center-first (M5)
+               chunked into grid-anchored 1024-px blocks, center-first
   annotations.py  GeoJSON document -> canonical annotation document (pure)
-                 + apply_edit (M4/M6: the pure delete/set_label/set_color/
+                 + apply_edit (the pure delete/set_label/set_color/
                               set_vertex/add_vertex ops)
   cache.py     byte-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
@@ -246,12 +232,12 @@ islide/
 
 frontend/      JS canvas view (JupyterLab extension; model + view + tests)
   tilemath.js     pure viewport/tile math (+ selected-level mirror)
-  compositor.js  pure canvas scene drawing (per-level alpha, M5)
-  blend.js       level cross-fade math (M5)
-  annotations.js pure annotation overlay drawing + hit testing (M2/M4)
+  compositor.js  pure canvas scene drawing (per-level alpha)
+  blend.js       level cross-fade math
+  annotations.js pure annotation overlay drawing + hit testing
                  + vertex handles / set_vertex preview / segment hit-test
-                 + add_vertex preview (M6)
-  polydraw.js    polygon draw state machine + draft preview (M3)
+                 + add_vertex preview
+  polydraw.js    polygon draw state machine + draft preview
   model.js       SlideModel
   view.js        SlideView (canvas, mouse, minimap, toolbar)
   labextension.js  widget-registry registration
@@ -263,7 +249,7 @@ data/            test slide (whole-slide TIFF, 37382x73222, 8 levels)
 
 ## Tests
 
-Python (pipeline + M1–M5 widget, headless):
+Python (pipeline + widget, headless):
 
 ```bash
 pip install -e ".[dev]"
