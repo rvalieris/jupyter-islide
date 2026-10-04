@@ -158,8 +158,10 @@ Per viewport change (coalesced to at most one in-flight pass):
    `screen_pos = (tile_pos_in_slide / zoom)` with `imageSmoothing` on for
    down-scale levels, then the full-slide overlay image (if set) and, on
    the second canvas, the annotations. Areas with no tile (outside the
-   slide bounds) show a plain white CSS background — out-of-bounds reads
-   are clamped, never requested.
+   slide bounds) show the canvas background — a gray/white checkerboard
+   (transparency-checkerboard style, an 8-px check), painted as a
+   repeating pattern fill before the tiles — out-of-bounds reads are
+   clamped, never requested.
 
 ### 5.1 Fetch strategy: "one big read, crop in Python"
 
@@ -411,7 +413,7 @@ moment the push lands. The cross-fade (OSD's `blendTime` idea) instead:
     loop runs only while a transition is live (stepped with real frame
     deltas); between transitions the view redraws on events, so idle CPU
     stays 0 (§9).
-- **Compositor** (`drawScene` takes `levelAlphas`): white underlay, then
+- **Compositor** (`drawScene` takes `levelAlphas`): checkerboard underlay, then
   present levels **coarsest first** (finest on top, OSD draw order), each
   pass at its `globalAlpha`, seam margin and DPR handling unchanged. The
   coarse-on-bottom ordering means the fading old level covers the screen
@@ -596,7 +598,7 @@ multi-threaded fetch pass.
 ## 10. Testing
 
 Two suites, no browser required — 301 Python tests
-(`python -m pytest tests/`) and 96 JS tests
+(`python -m pytest tests/`) and 98 JS tests
 (`cd frontend && node --test test/`). Because the widget is a plain
 Python object until displayed, the whole Python-side state machine is
 tested headless, and the JS pure modules are tested against mock 2D

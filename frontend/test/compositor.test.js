@@ -3,15 +3,19 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawScene, drawOverlay } from '../compositor.js';
+import { drawScene, drawOverlay, paintCheckerTile, CHECKER_SIZE } from '../compositor.js';
 
 function mockCtx() {
-  const calls = { fill: 0, draw: [] };
+  const calls = { fill: 0, draw: [], fills: [] };
   return {
     calls,
     set fillStyle(v) { this._fillStyle = v; },
     get fillStyle() { return this._fillStyle; },
-    fillRect(x, y, w, h) { calls.fill += 1; this.lastFill = [x, y, w, h]; },
+    fillRect(x, y, w, h) {
+      calls.fill += 1;
+      calls.fills.push([this._fillStyle, x, y, w, h]);
+      this.lastFill = [x, y, w, h];
+    },
     drawImage(img, left, top, w, h) {
       calls.draw.push([img, left, top, w, h, this.globalAlpha]);
     },
@@ -24,7 +28,9 @@ const META = {
   level_downsamples: [1, 2, 4, 8, 16, 32, 64, 128],
 };
 
-test('drawScene paints the canvas white and draws every visible ready tile', () => {
+test('drawScene paints the canvas background and draws every visible ready tile', () => {
+  // Mock ctx has no createPattern (and Node has no DOM): the background
+  // falls back to a plain light fill.
   const t = { cx: 256, cy: 256, zoom: 1.0, canvasW: 512, canvasH: 512 };
   const geo = {
     '0:0:0': [0, 0, 0, 256, 256],
@@ -127,6 +133,66 @@ test('drawScene reprojections under a local transform (smooth pan)', () => {
   assert.ok(Math.abs(left1 - ((512 - t1.cx) * t1.zoom + t1.canvasW / 2) + seam) < 1e-9);
   assert.ok(Math.abs(top1 - ((256 - t1.cy) * t1.zoom + t1.canvasH / 2) + seam) < 1e-9);
   assert.ok(Math.abs(w1 - (256 * 1.0 * t1.zoom + 2 * seam)) < 1e-9);
+});
+
+// ------------------------------------------------------------ checkerboard
+test('paintCheckerTile: light 2s×2s base, dark squares top-left and bottom-right', () => {
+  const s = CHECKER_SIZE;
+  const ctx = mockCtx();
+  paintCheckerTile(ctx);
+  assert.equal(ctx.calls.fill, 3);
+  assert.deepEqual(ctx.calls.fills, [
+    ['#ffffff', 0, 0, 2 * s, 2 * s],
+    ['#cccccc', 0, 0, s, s],
+    ['#cccccc', s, s, s, s],
+  ]);
+});
+
+test('drawScene fills the background with the repeating checker pattern (pattern ctx)', () => {
+  const s = CHECKER_SIZE;
+  const prevDoc = globalThis.document;
+  const tileCanvas = { width: 0, height: 0 };
+  const tileCtx = mockCtx();
+  globalThis.document = {
+    createElement: () => {
+      tileCanvas.getContext = () => tileCtx;
+      return tileCanvas;
+    },
+  };
+  const patterns = [];
+  const PATTERN = { sentinel: 'pattern' };
+  const ctx = Object.assign(mockCtx(), {
+    createPattern(tile, mode) {
+      patterns.push([tile, mode]);
+      return PATTERN;
+    },
+  });
+  const t = { cx: 0, cy: 0, zoom: 1.0, canvasW: 256, canvasH: 128 };
+  try {
+    drawScene(ctx, { transform: t, meta: META, tileGeo: {}, images: new Map() });
+    // the whole canvas is one pattern fill...
+    assert.equal(ctx.calls.fill, 1);
+    assert.deepEqual(ctx.lastFill, [0, 0, 256, 128]);
+    assert.equal(ctx.fillStyle, PATTERN);
+    // ...built from a 2s×2s tile canvas painted by paintCheckerTile...
+    assert.equal(patterns.length, 1);
+    assert.equal(patterns[0][0], tileCanvas);
+    assert.equal(patterns[0][1], 'repeat');
+    assert.equal(tileCanvas.width, 2 * s);
+    assert.equal(tileCanvas.height, 2 * s);
+    assert.deepEqual(tileCtx.calls.fills, [
+      ['#ffffff', 0, 0, 2 * s, 2 * s],
+      ['#cccccc', 0, 0, s, s],
+      ['#cccccc', s, s, s, s],
+    ]);
+    // ...reused on the next frame (no second pattern for the same ctx)
+    drawScene(ctx, { transform: t, meta: META, tileGeo: {}, images: new Map() });
+    assert.equal(patterns.length, 1);
+    assert.equal(ctx.calls.fill, 2);
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+  }
 });
 
 // ------------------------------------------------------------------ overlay

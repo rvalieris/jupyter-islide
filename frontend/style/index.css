@@ -18,7 +18,10 @@
   width: 100%;
   /* fallback until the synced `canvas_h` trait is applied (view.js) */
   height: 540px;
-  background: #ffffff;
+  /* match the canvas's checkerboard background (drawn by the compositor):
+     the canvas is transparent until its first paint, so this shows then.
+     8 px checks in a 16 px tile. */
+  background: repeating-conic-gradient(#cccccc 0 25%, #ffffff 0 50%) 0 0 / 16px 16px;
   border: 1px solid var(--jp-border-color-2, #ccc);
 }
 

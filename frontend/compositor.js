@@ -10,6 +10,70 @@
 import * as math from './tilemath.js';
 
 /**
+ * Checkerboard background: the area beyond the slide bounds has no tile, so
+ * the canvas shows its background — a gray/white check (transparency-
+ * checkerboard style) reads as "no slide" rather than a white sheet.
+ * `CHECKER_SIZE` is one check square's side, screen px.
+ */
+export const CHECKER_SIZE = 8;
+const CHECKER_LIGHT = '#ffffff';
+const CHECKER_DARK = '#cccccc';
+
+/**
+ * Paint one 2s × 2s checker tile into ctx (origin at the tile's top-left):
+ * a light base with dark squares top-left and bottom-right — tiling
+ * horizontally/vertically completes the check.
+ */
+export function paintCheckerTile(ctx) {
+  const s = CHECKER_SIZE;
+  ctx.fillStyle = CHECKER_LIGHT;
+  ctx.fillRect(0, 0, 2 * s, 2 * s);
+  ctx.fillStyle = CHECKER_DARK;
+  ctx.fillRect(0, 0, s, s);
+  ctx.fillRect(s, s, s, s);
+}
+
+// The pattern tile canvas is built once (browser only — it needs a canvas
+// element); CanvasPatterns are not shareable, so they are cached per draw
+// context.
+let _checkerTile = null;
+const _patternCache = new WeakMap();
+
+function checkerPattern(ctx) {
+  let pattern = _patternCache.get(ctx);
+  if (pattern) return pattern;
+  let tile = _checkerTile;
+  if (!tile) {
+    tile = document.createElement('canvas');
+    tile.width = tile.height = 2 * CHECKER_SIZE;
+    paintCheckerTile(tile.getContext('2d'));
+    _checkerTile = tile;
+  }
+  pattern = ctx.createPattern(tile, 'repeat') || null;
+  if (pattern) _patternCache.set(ctx, pattern);
+  return pattern;
+}
+
+/**
+ * Paint the full-canvas background (the checkerboard beyond the slide
+ * bounds). A pattern-capable context (a real canvas with a DOM) fills with
+ * the repeating tile — one fill, one 2s×2s pattern canvas. Otherwise (the
+ * unit-test mock ctx, no DOM) fall back to a plain light fill.
+ */
+function paintBackground(ctx, w, h) {
+  if (typeof document !== 'undefined' && typeof ctx.createPattern === 'function') {
+    const pattern = checkerPattern(ctx);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, w, h);
+      return;
+    }
+  }
+  ctx.fillStyle = CHECKER_LIGHT;
+  ctx.fillRect(0, 0, w, h);
+}
+
+/**
  * Draw the current scene into `ctx` (already scaled for device pixel
  * ratio, origin at canvas top-left, CSS-pixel units).
  *
@@ -33,14 +97,13 @@ import * as math from './tilemath.js';
  * carry fractional screen rects and each drawImage is rasterized
  * independently, so without overlap the shared boundary can end up only
  * partially covered by both neighbours, leaving a hairline (1 device px)
- * white line where the canvas background shows through. The slight stretch
+ * line where the canvas background shows through. The slight stretch
  * (1 px on a 256+ px tile) is imperceptible.
  */
 const SEAM_MARGIN = 0.5;
 
 export function drawScene(ctx, { transform, meta, tileGeo, images, levelAlphas = null }) {
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, transform.canvasW, transform.canvasH);
+  paintBackground(ctx, transform.canvasW, transform.canvasH);
 
   const ds = meta.level_downsamples;
   const tiles = math.visibleTiles(transform, tileGeo, ds);
