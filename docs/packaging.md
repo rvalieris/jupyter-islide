@@ -34,13 +34,14 @@
   sync by `frontend/sync-version.mjs`, which also runs as the npm `prebuild`
   hook. A guard test pins all three
   (`tests/test_versions.py`, [docs/testing.md](testing.md)).
-- **Widget module version** (`2.0.0`): the `_model_module_version` /
+- **Widget module version** (`2.1.0`): the `_model_module_version` /
   `_view_module_version` pair, declared on the Python side
   (`islide/widget.py`) and mirrored in `frontend/defaults.js` (`ISLIDE_MODULE_VERSION`,
   pinned by `frontend/test/defaults.test.js`). It is the **wire** version —
   bumped when the trait contract changes (the `annotations` trait's type
-  became the canonical annotation document at `2.0.0`), independent of the
-  package version.
+  became the canonical annotation document at `2.0.0`; the per-chunk
+  `tiles`/`tile_geo` push and the `resync` attach counter at `2.1.0`),
+  independent of the package version.
 
 ## Dependencies
 

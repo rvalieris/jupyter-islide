@@ -174,11 +174,20 @@ export class SlideView extends DOMWidgetView {
     // attached, so no change:tiles event fires for them. Without this the
     // first draw renders empty (m:all) until the viewport happens to
     // change the plan (a later push then merges), leaving the initial
-    // viewport blank.
+    // viewport blank. Under per-chunk pushes (DESIGN §6.6.2) that seed is
+    // the *last* chunk of the last render — the resync send below makes
+    // the kernel re-render the current viewport and re-push the full set.
     this._mergeTiles();
     // Seed the accumulated tile geometry the same way — no
     // change:tile_geo event fires for the kernel's initial render either.
     this._onTileGeoChange();
+    // Attach re-render (DESIGN §6.6.2): the fit-echo below can be a
+    // no-op in Python when the viewport value is unchanged (traitlets
+    // fires no observer for a value-equal set), so the full-set
+    // re-render is requested explicitly — bump the resync counter
+    // (JS -> Py last-event slot) once per attach.
+    this.model.set('resync', (this.model.get('resync') || 0) + 1);
+    this.model.save();
   }
 
   _onViewportChange() {
@@ -198,14 +207,15 @@ export class SlideView extends DOMWidgetView {
   }
 
   /** Accumulate tile geometry across pushes — Python pushes the
-   * center chunk first and then the full set, and drawScene draws
-   * everything accumulated (not just the latest push, which would blank
-   * the canvas behind the incoming center chunk). Also records the level
-   * cross-fade: when the selected pyramid level (math.selectLevel on the
-   * local zoom, mirroring Python's select_level) changes between pushes,
-   * the old level fades out over blend.BLEND_MS while the new level draws
-   * at full opacity. The second push of a two-stage render re-enters with
-   * the same selected level, so the in-flight fade is kept, not reset.
+   * viewport chunk by chunk (viewport-center-first order), and drawScene
+   * draws everything accumulated (not just the latest push, which would
+   * blank the canvas behind the incoming center chunk). Also records the
+   * level cross-fade: when the selected pyramid level (math.selectLevel
+   * on the local zoom, mirroring Python's select_level) changes between
+   * pushes, the old level fades out over blend.BLEND_MS while the new
+   * level draws at full opacity. Later pushes of the same render
+   * re-enter with the same selected level, so the in-flight fade is kept,
+   * not reset.
    */
   _onTileGeoChange() {
     const geo = this.model.get('tile_geo') || {};

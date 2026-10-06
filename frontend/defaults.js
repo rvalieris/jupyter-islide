@@ -30,7 +30,15 @@ export const SLIDE_MODEL_DEFAULTS = {
   // Python observer applies it to `annotations` and pushes the updated
   // set.
   annotation_edit: null,
+  // The attach re-render counter (JS -> Py): bumped once per attach by the
+  // view. A re-attached view seeds its image cache from the synced state —
+  // the *last* chunk of the last render (per-chunk pushes, DESIGN §6.6.2)
+  // — and its fit-echo can be a no-op in Python (traitlets fires no
+  // observer for a value-equal set), so the full-set re-render is
+  // requested explicitly here (last-event counter, like last_polygon /
+  // annotation_edit).
+  resync: 0,
   status: '',
 };
 
-export const ISLIDE_MODULE_VERSION = '2.0.0';
+export const ISLIDE_MODULE_VERSION = '2.1.0';

@@ -261,7 +261,7 @@ Registration (base-6 pattern, verified against `@jupyter-widgets/base`
 ```js
 registry.registerWidget({
   name: 'jupyter-islide',    // must equal _model_module
-  version: '2.0.0',          // must satisfy _model_module_version (semver)
+  version: '2.1.0',          // must satisfy _model_module_version (semver)
   exports: { SlideModel, SlideView },  // keys = _model_name/_view_name
 });
 ```
@@ -405,7 +405,10 @@ Two OpenSeadragon ideas make its zoom smooth — a temporal cross-fade
 across level changes and viewport-center-first tile fetch. Both are ported
 *as ideas* (not code) into the push architecture. The design rule stands:
 **Python owns all state and decoding; the JS view is a compositor**
-(§3). No new traits, no wire change (module version stays 2.0.0).
+(§3). The cross-fade adds no wire (view-local draw policy); the
+§6.6.2 per-chunk push changes *how* the tile set is delivered (last-event
+`tiles`/`tile_geo` pushes + an attach `resync` counter — module version
+2.1.0).
 
 #### 6.6.1 Level cross-fade (view-local draw policy; `frontend/blend.js`, pure module)
 
@@ -469,22 +472,39 @@ time — no heap):
   A plan whose viewport fits one block is a single chunk — the
   whole-viewport plan byte-for-byte, including the common zoomed-out
   case.
-- `fetch_tiles` iterates chunks in order (a chunk is skipped when every
-  tile in it is cached; otherwise one `read_region` for the block, crop,
-  cache — the §5.1 "one big read, crop in Python" strategy, just smaller
-  and ordered). ~4 chunks for a 1280×720 canvas; the extra decode
+- `fetch_chunk` (one block) / `fetch_tiles` (the whole plan, in chunk
+  order) read one `read_region` per chunk — a chunk is skipped when
+  every tile in it is cached; otherwise one `read_region` for the block,
+  crop, cache — the §5.1 "one big read, crop in Python" strategy, just
+  smaller and ordered. ~4 chunks for a 1280×720 canvas; the extra decode
   setups are cheap against a single viewport-sized read.
-- **Two-stage push** (this is what makes center-first visible):
-  `_render_once` pushes `tiles`/`tile_geo` (a) after the center chunk —
-  partial set — and (b) after the remaining chunks — the full set.
-  Single-chunk plans push once. The trait *semantics* are "tiles
-  available so far for the current viewport"; the **final** value after a
-  render is the full-viewport set, so re-attach replay and every
-  contract (keys, `tile_geo` geometry, status) hold. A partial push from
-  a superseded viewport is harmless: the JS side only merges, and the
-  render loop's coalescing re-plans from the latest viewport. Comm
-  cost: one extra ~50–150 KB partial push per multi-chunk render, only
-  at mid/zoomed-in levels.
+- **Per-chunk push** (this is what makes center-first visible):
+  `_render_once` pushes `tiles`/`tile_geo` **once per chunk**, in the
+  plan's viewport-center-first order, each chunk after its own
+  `read_region` + encode lands — the center chunk is on screen without
+  waiting for the rest of the pass, and it is not re-sent in a
+  follow-up push (a single-chunk plan pushes exactly once). The trait
+  *semantics* are the **last chunk pushed** (last-event slots, like
+  `last_polygon` / `annotation_edit`): the JS view accumulates a
+  render's pushes (its image cache is a merge, not a replace), so after
+  a render the view holds the full viewport while the traits hold the
+  last chunk. Re-attach seeding stays correct because the JS view bumps
+  a `resync` counter (JS→Py last-event) once per attach and the Python
+  observer re-renders the current viewport — needed because the
+  fit-echo alone can be a no-op (traitlets fires no observer for a
+  value-equal viewport set). A partial push from a superseded viewport
+  is harmless: the JS side only merges, and the render loop's
+  coalescing re-plans from the latest viewport. Comm cost: *less* than
+  the old two-stage push — N chunk-sets instead of N+1 (the center chunk
+  is no longer re-sent), and the same for single-chunk plans (one push
+  either way). **Display after `wait()`.** Displaying before the
+  background open completes puts the view on a widget whose state is
+  still streaming in: the attach `resync` bump lands before
+  `slide_open` (its triggered render is a no-op), and in JupyterLab the
+  output rendering can race the still-open comm (console
+  `widget model not found`, dead canvas on re-run). `wait()` makes
+  `comm_open` carry the complete state, so the view attaches to a
+  consistent snapshot.
 
 #### 6.6.3 Out of scope
 
@@ -501,11 +521,13 @@ keying), the OpenSlide backend.
 ```python
 from islide import SlideViewer
 
-v = SlideViewer("sample.svs")   # opens in background; safe to display now
+v = SlideViewer("sample.svs")   # opens in background
 # SlideViewer(path, canvas_w=960, canvas_h=540, tile_size=256,
 #             cache_max_mb=256, *, slide=None, jpeg_quality=85)
-display(v)                      # canvas renders once the slide is open
 v.wait()                       # block until open (raises on open failure)
+display(v)                     # display *after* wait(): the widget's first
+                               # comm state then carries the full state
+                               # (open slide, fit viewport, initial tiles)
 
 # programmatic navigation (slide coords = level-0 px)
 v.center_on(120_000, 80_000)
@@ -544,7 +566,7 @@ v.close()                      # joins open thread, closes the slide handle
 
 Widget identity (must match the JS module, §6.1.1):
 `_model_name="SlideModel"`, `_view_name="SlideView"`,
-`_model_module="jupyter-islide"`, `_model_module_version="2.0.0"`. The
+`_model_module="jupyter-islide"`, `_model_module_version="2.1.0"`. The
 module version is the **wire** version — bumped when the trait contract
 changes (the canonical annotation document, §6.3), independent of the
 package version.
@@ -558,7 +580,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
 | `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
-| `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — replaced wholesale per push; a multi-chunk render pushes a partial (center-first, §6.6.2) set en route and the **final** push is the full viewport set — the JS view merges, never evicts per push |
+| `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — last-event slot: a render pushes one chunk at a time (viewport-center-first, §6.6.2), so the trait holds the **last chunk** while the JS view accumulates the render's pushes (merges, never evicts per push) into the full viewport |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
 | `overlay_img` | Py→JS | dataURL | full-slide overlay image as a PNG data URL (`""` = none); drawn by the compositor over the tiles, under the annotations |
@@ -566,6 +588,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `annotations` | Py→JS | dict | the canonical annotation document — a restricted GeoJSON `FeatureCollection` in level-0 px (§6.3); imports, drawn polygons, and edits all land here |
 | `last_polygon` | JS→Py | list | the just-saved drawn polygon — bare open ring `[[x, y], …]`, level-0 px (`null` = none yet); Python validates and appends a `Polygon` feature to `annotations` |
 | `annotation_edit` | JS→Py | dict | the last issued edit command — `{op: "delete" \| "set_label" \| "set_color" \| "set_vertex" \| "add_vertex", id, …}` (`null` = none yet); Python applies it with `apply_edit` and pushes the updated `annotations` (§6.5) |
+| `resync` | JS→Py | int | attach re-render counter (last-event, like `last_polygon`): the view bumps it once per attach; Python re-renders the current viewport — the full-set re-push against the partial attach seed (§6.6.2) |
 | `status` | Py→JS | str | status line (open progress / error / last render's level·tile info; the live zoom·µm/px is the JS readout's) |
 
 ### 7.1 `SlideBackend` (the seam for future remotes)
@@ -610,7 +633,7 @@ openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
 | Time to first pixel (local file, after kernel import) | < 2 s on a typical SVS (open on bg thread; minimap first) |
 | Pan responsiveness (cached region) | ≤ 1 frame of perceived lag; tiles already on JS side |
 | Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
-| Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms), the rest of the viewport follows in the same render pass |
+| Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms); each remaining chunk is pushed as its own read lands, in the same render pass |
 | Tile transfer per full viewport | ≤ ~400 KB (≈ 20 tiles × 20 KB JPEG) |
 | Steady-state memory (cache on) | 256 MB default budget + slide handle overhead |
 | Idle CPU | 0 (no polling; everything is trait-driven) |
@@ -643,7 +666,7 @@ Two notes that stay here:
 
 ## 11. Packaging & Dependencies
 
-Layout, the version-sync rules (package version vs. the 2.0.0 wire
+Layout, the version-sync rules (package version vs. the 2.1.0 wire
 version), the dependencies (Python / libopenslide / JS), and the release
 mechanism — `hatchling` + the `hatch-jupyter-builder` hook builds the
 extension at wheel-build time so a single `pip install jupyter-islide`

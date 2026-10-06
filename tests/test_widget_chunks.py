@@ -1,12 +1,14 @@
 """Canvas-viewer tests — headless, no openslide.
 
-Covers the two-stage push over the canvas widget (docs/DESIGN.md §6.6):
-a multi-chunk plan pushes the center chunk first, then the full tile set
-(both pushes carry identical absolute level-px geometry); a single-chunk
-plan pushes once with a single grid-anchored read (the single-push wire
-contract); reads happen center-first in chunk order; and a burst of
-JS-originated viewports coalesces to a final state matching the final
-plan (the render-loop handoff).
+Covers the per-chunk push over the canvas widget (docs/DESIGN.md §6.6.2):
+a multi-chunk plan pushes one chunk at a time in the plan's
+viewport-center-first order (each push's geometry is the chunk's absolute
+level-px crops; the union of the render's pushes is the full viewport
+set, the traits hold the last chunk — last-event semantics); a
+single-chunk plan pushes once with a single grid-anchored read (the
+single-push wire contract); reads happen center-first in chunk order;
+and a burst of JS-originated viewports coalesces to a final state
+matching the final plan (the render-loop handoff).
 """
 from __future__ import annotations
 
@@ -103,8 +105,13 @@ def viewer():
         v.close()
 
 
-# -------------------------------------------------------------- two-stage
-def test_multi_chunk_plan_pushes_center_then_full(viewer):
+# ------------------------------------------------------------ per-chunk
+def test_multi_chunk_plan_pushes_one_chunk_at_a_time(viewer):
+    """Multi-chunk: each chunk is read, encoded, and pushed as its own
+    ``tiles``/``tile_geo`` assignment as soon as its read lands — the
+    viewport-center chunk first, the rest in center-out order. The
+    traits hold the last chunk (last-event semantics); the union of the
+    render's pushes is the full viewport set."""
     tile_pushes: list[dict] = []
     geo_pushes: list[dict] = []
     viewer.observe(lambda c: tile_pushes.append(c["new"]), names="tiles")
@@ -120,22 +127,34 @@ def test_multi_chunk_plan_pushes_center_then_full(viewer):
     assert plan.level == 0
     assert len(plan.chunks) == 4
 
-    # two pushes: center chunk, then the full set
-    assert len(tile_pushes) == 2, [len(p) for p in tile_pushes]
-    first, full = tile_pushes
-    center_keys = {key(t.key) for t in plan.chunks[0].tiles}
-    assert set(first) == center_keys
-    assert set(full) == {key(t.key) for t in plan.tiles}
-    assert set(first) < set(full)
+    # one tiles push per chunk, in the plan's center-first order
+    assert len(tile_pushes) == len(plan.chunks), [len(p) for p in tile_pushes]
+    for i, chunk in enumerate(plan.chunks):
+        assert set(tile_pushes[i]) == {key(t.key) for t in chunk.tiles}
+        for k in tile_pushes[i]:
+            assert tile_pushes[i][k].startswith("data:image/jpeg;base64,")
+    # the union of the pushes is the full viewport set; the traits hold
+    # the last chunk
+    union = {}
+    for p in tile_pushes:
+        union.update(p)
+    assert set(union) == {key(t.key) for t in plan.tiles}
+    assert viewer.tiles == tile_pushes[-1]
 
-    # both pushes carry absolute level-px geometry, identical for shared
-    # tiles; the final state is the full set
-    assert geo_pushes[0] == {k: geo_pushes[1][k] for k in geo_pushes[0]}
-    assert geo_pushes[1] == expected_geo(plan)
-    assert viewer.tiles == full
-    assert viewer.tile_geo == expected_geo(plan)
+    # each push carries absolute level-px geometry for its chunk (the
+    # plan's full geometry, per chunk); the trait holds the last chunk's
+    assert len(geo_pushes) == len(plan.chunks)
+    geo = expected_geo(plan)
+    merged_geo = {}
+    for i, chunk in enumerate(plan.chunks):
+        want = {key(t.key): geo[key(t.key)] for t in chunk.tiles}
+        assert geo_pushes[i] == want
+        merged_geo.update(geo_pushes[i])
+    assert merged_geo == geo
+    assert viewer.tile_geo == geo_pushes[-1]
 
-    # one read per chunk, center chunk first (then cached in the full pass)
+    # one read per chunk, center chunk first (each push follows its own
+    # read; nothing is read twice)
     assert len(fake_reads) == len(plan.chunks)
     for (loc, level, size), c in zip(fake_reads, plan.chunks):
         assert (loc, level, size) == (c.loc, plan.level, c.size)
@@ -168,6 +187,8 @@ def test_rapid_js_viewports_coalesce_to_final_plan(viewer):
     final viewport's plan — superseded viewports may be skipped, but the
     last one must always be rendered (render-loop handoff)."""
     n = 8
+    tile_pushes: list[dict] = []
+    viewer.observe(lambda c: tile_pushes.append(c["new"]), names="tiles")
     for i in range(n):
         viewer.viewport = {
             "cx": 1200 + i * 200, "cy": 2000, "zoom": 1.0,
@@ -180,5 +201,12 @@ def test_rapid_js_viewports_coalesce_to_final_plan(viewer):
     assert not viewer._rendering_bg
     final = Viewport(1200 + (n - 1) * 200, 2000, 1.0, canvas_w=960, canvas_h=540)
     plan = plan_viewport(BIG, final, tile_size=256)
-    assert set(viewer.tiles) == {key(t.key) for t in plan.tiles}
-    assert viewer.tile_geo == expected_geo(plan)
+    # the final render's per-chunk pushes cover the final plan; the
+    # traits hold its last chunk (last-event semantics)
+    final_pushes = tile_pushes[-len(plan.chunks):]
+    assert len(final_pushes) == len(plan.chunks)
+    union = {}
+    for p in final_pushes:
+        union.update(p)
+    assert set(union) == {key(t.key) for t in plan.tiles}
+    assert viewer.tiles == final_pushes[-1]

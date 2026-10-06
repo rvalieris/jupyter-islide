@@ -8,8 +8,8 @@ changes flow back through the ``viewport`` trait (debounced by the view).
 Slide opening happens on a background thread so the kernel stays
 responsive; call :meth:`SlideViewer.wait` to block until open (or error).
 
-Pipeline: ``plan_viewport`` -> ``fetch_tiles`` -> ``TileCache`` ->
-``jpeg_data_url``.
+Pipeline: ``plan_viewport`` -> per-chunk ``fetch_chunk`` -> ``TileCache``
+-> ``jpeg_data_url``.
 """
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ from .annotations import apply_edit, normalize_ring, parse_annotations
 from .backend import OpenSlideBackend, _object_path
 from .cache import TileCache
 from .encode import jpeg_data_url, png_data_url
-from .fetch import fetch_chunk, fetch_tiles
-from .plan import ReadPlan, plan_viewport
+from .fetch import fetch_chunk
+from .plan import Chunk, ReadPlan, plan_viewport
 from .viewport import SlideMeta, Viewport, fit_zoom
 
 __all__ = ["SlideViewer"]
@@ -159,7 +159,10 @@ class SlideViewer(widgets.DOMWidget):
       maps the same key to ``[level, ox, oy, cw, ch]`` in level pixels
       (absolute origin of the tile's crop). The view reprojects geometry
       under its local transform, so panning/zooming stays smooth between
-      Python round-trips.
+      Python round-trips. A render pushes one chunk at a time
+      (viewport-center-first; docs/DESIGN.md §6.6.2), so the traits hold
+      the *last* chunk (last-event semantics) while the JS view
+      accumulates the render's pushes into the full viewport.
     * ``canvas_h`` (synced int, CSS px) is the user-settable on-screen
       viewport height: set it at construction or at runtime
       (``v.canvas_h = 900``). The JS view applies it to the canvas; its
@@ -178,8 +181,8 @@ class SlideViewer(widgets.DOMWidget):
     _view_name = Unicode("SlideView").tag(sync=True)
     _model_module = Unicode("jupyter-islide").tag(sync=True)
     _view_module = Unicode("jupyter-islide").tag(sync=True)
-    _model_module_version = Unicode("2.0.0").tag(sync=True)
-    _view_module_version = Unicode("2.0.0").tag(sync=True)
+    _model_module_version = Unicode("2.1.0").tag(sync=True)
+    _view_module_version = Unicode("2.1.0").tag(sync=True)
 
     # -- synced state (Python <-> JS), see docs/DESIGN.md §7 ---------------------
     slide_open = Bool(False).tag(sync=True)
@@ -232,6 +235,15 @@ class SlideViewer(widgets.DOMWidget):
     # every op is idempotent over the pushed set, so the replay is a
     # harmless no-op.
     annotation_edit = Dict(default_value=None, allow_none=True).tag(sync=True)
+    # The attach re-render counter (JS -> Py): the JS view bumps it once
+    # per attach (last-event counter, like last_polygon / annotation_edit).
+    # A re-attached view seeds its image cache from the traits' current
+    # value — the *last* chunk of the last render (per-chunk pushes,
+    # docs/DESIGN.md §6.6.2) — and its initial fit-echo can be a no-op on
+    # the Python side (traitlets fires no observer for a value-equal
+    # set), so the full-set re-render is requested explicitly: the
+    # observer schedules a render of the current viewport.
+    resync = Int(0).tag(sync=True)
     status = Unicode("").tag(sync=True)
 
     @validate("annotations")
@@ -297,6 +309,7 @@ class SlideViewer(widgets.DOMWidget):
         self.observe(self._on_canvas_h_change, names="canvas_h")
         self.observe(self._on_last_polygon_change, names="last_polygon")
         self.observe(self._on_annotation_edit_change, names="annotation_edit")
+        self.observe(self._on_resync_change, names="resync")
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
@@ -452,30 +465,28 @@ class SlideViewer(widgets.DOMWidget):
 
     # --------------------------------------------------------------- rendering
     def _render_once(self) -> ReadPlan | None:
-        """Plan + fetch + encode for the current viewport; push to the view.
+        """Plan + fetch + encode for the current viewport; push to the
+        view.
 
-        A multi-chunk plan pushes twice (docs/DESIGN.md §6.6) — the center
-        chunk first, then the full tile set — so the view can cross-fade
-        the incoming level in from the middle out; a single-chunk plan
-        pushes once. Both pushes carry
-        identical geometry for shared tiles (absolute level px from the
-        plan), so the view's accumulated tile state stays consistent.
+        The plan's chunks are pushed one at a time in the plan's
+        viewport-center-first order (docs/DESIGN.md §6.6.2): each chunk
+        is read, encoded, and pushed as its own ``tiles``/``tile_geo``
+        assignment as soon as its read lands — progressive center-out
+        visibility, each tile's crop read exactly once per render, and
+        no follow-up push re-sending the center chunk. A single-chunk
+        plan pushes once. The JS view accumulates a render's pushes
+        (its image cache is a merge, not a replace), so the render's
+        final frame is the full viewport while the traits hold only the
+        last chunk (last-event semantics).
         """
         if self._closed or not self.slide_open or self._meta is None:
             return None
         vp = self._vp_current
         plan = plan_viewport(self._meta, vp, self.tile_size)
-        if len(plan.chunks) > 1:
-            # Center chunk first; its tiles are cached, so the full fetch
-            # below only reads the remaining chunks (center-first order).
-            center = plan.chunks[0]
-            self._push_tile_set(
-                plan,
-                {t.key for t in center.tiles},
-                fetch_chunk(self.backend, self.cache, center, plan),
+        for chunk in plan.chunks:
+            self._push_chunk(
+                plan, chunk, fetch_chunk(self.backend, self.cache, chunk, plan)
             )
-        tiles = fetch_tiles(self.backend, self.cache, plan)  # type: ignore[arg-type]
-        self._push_tile_set(plan, {t.key for t in plan.tiles}, tiles)
         # Pipeline info only: the live zoom + µm/px belong to the JS
         # readout (which tracks the local transform); repeating them here
         # would show the zoom twice — and this line lags the pointer by
@@ -486,29 +497,28 @@ class SlideViewer(widgets.DOMWidget):
         )
         return plan
 
-    def _push_tile_set(
+    def _push_chunk(
         self,
         plan: ReadPlan,
-        tile_keys: set[tuple[int, int, int]],
-        tiles: dict[tuple, Any],
+        chunk: Chunk,
+        chunk_tiles: dict[tuple, Any],
     ) -> None:
-        """Encode ``tiles`` (tile key -> PIL image) and push them as
-        ``tiles`` + ``tile_geo`` for ``tile_keys``.
+        """Encode one chunk's tiles and push them as the ``tiles`` +
+        ``tile_geo`` last-event values (the JS view accumulates a
+        render's pushes into its image cache).
 
         Geometry is absolute level px (``plan.read_origin`` + the tile
-        crops), identical between a render's two pushes, so the view can
-        reproject each tile under its own local transform.
+        crops) — identical for a tile across a render's pushes, so the
+        view can reproject each tile under its own local transform.
         """
         geo: dict[str, list[int]] = {}
         urls: dict[str, str] = {}
         rx, ry = plan.read_origin
-        for t in plan.tiles:
-            if t.key not in tile_keys:
-                continue
+        for t in chunk.tiles:
             k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
             x0, y0, x1, y1 = t.crop
             geo[k] = [t.key[0], rx + x0, ry + y0, x1 - x0, y1 - y0]
-            urls[k] = jpeg_data_url(tiles[t.key], self._jpeg_quality)
+            urls[k] = jpeg_data_url(chunk_tiles[t.key], self._jpeg_quality)
         self.tiles = urls
         self.tile_geo = geo
 
@@ -778,3 +788,14 @@ class SlideViewer(widgets.DOMWidget):
                 "add_vertex": "vertex",
             }[cmd["op"]]
             self.status = f"edited #{fid} ({what})"
+
+    # ------------------------------------------------------------ resync
+    def _on_resync_change(self, change: dict) -> None:
+        """A JS view attached (or re-attached): re-render the current
+        viewport so it receives the full set — its image-cache seed from
+        the synced state is only the last chunk of the last render.
+
+        The counter always changes, so this fires even when the view's
+        fit-echo matches the current ``viewport`` value (a value-equal set
+        fires no viewport observer)."""
+        self._schedule_render()

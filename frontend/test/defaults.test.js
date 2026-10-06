@@ -11,11 +11,11 @@ test('defaults cover exactly the documented trait names', () => {
   assert.deepEqual(
     Object.keys(SLIDE_MODEL_DEFAULTS).sort(),
     ['annotation_edit', 'annotations', 'canvas_h', 'last_polygon', 'meta',
-     'minimap_img', 'overlay_alpha', 'overlay_img', 'slide_open', 'status',
-     'tile_geo', 'tiles', 'viewport'],
+     'minimap_img', 'overlay_alpha', 'overlay_img', 'resync', 'slide_open',
+     'status', 'tile_geo', 'tiles', 'viewport'],
   );
 });
 
 test('module version matches the Python-side declaration', () => {
-  assert.equal(ISLIDE_MODULE_VERSION, '2.0.0');
+  assert.equal(ISLIDE_MODULE_VERSION, '2.1.0');
 });

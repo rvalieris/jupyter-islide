@@ -3,7 +3,7 @@
  * JupyterLab widget manager's external widget registry.
  *
  * The registry matches the Python-side `_model_module` ("jupyter-islide") and
- * `_model_module_version` ("2.0.0") against the {name, version} pair
+ * `_model_module_version` ("2.1.0") against the {name, version} pair
  * registered here (semver), then resolves the `_model_name` / `_view_name`
  * class from `exports`.
  */

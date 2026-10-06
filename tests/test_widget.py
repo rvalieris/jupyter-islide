@@ -59,8 +59,8 @@ def test_widget_identity_matches_frontend():
     assert cls._view_name.default() == "SlideView"
     assert cls._model_module.default() == "jupyter-islide"
     assert cls._view_module.default() == "jupyter-islide"
-    assert cls._model_module_version.default() == "2.0.0"
-    assert cls._view_module_version.default() == "2.0.0"
+    assert cls._model_module_version.default() == "2.1.0"
+    assert cls._view_module_version.default() == "2.1.0"
     # every synced identity/data trait has the sync tag
     for name, trait in vars(cls).items():
         if isinstance(trait, TraitType):
@@ -184,12 +184,50 @@ def _key_of(key: str) -> tuple[int, int, int]:
     return int(level), int(tx), int(ty)
 
 
+def _wait_bg(viewer, timeout: float = 30) -> None:
+    """Block until no background render is in flight (the traits then
+    hold the last render's final pushes)."""
+    deadline = time.monotonic() + timeout
+    while viewer._rendering_bg and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not viewer._rendering_bg
+
+
+def _capture_render(viewer, render_fn) -> dict:
+    """Run ``render_fn`` (a programmatic viewport change) and return the
+    union of the render's per-chunk ``tiles`` pushes — the render's full
+    viewport set (the ``tiles``/``tile_geo`` traits are last-event slots
+    holding the last chunk; docs/DESIGN.md §6.6.2)."""
+    pushes: list[dict] = []
+    observer = viewer.observe(lambda c: pushes.append(c["new"]), names="tiles")
+    try:
+        render_fn()
+        _wait_bg(viewer)
+    finally:
+        viewer.unobserve(observer, names="tiles")
+    merged: dict = {}
+    for p in pushes:
+        merged.update(p)
+    return merged
+
+
 def test_tiles_and_tile_geo_contract(viewer):
+    """The synced ``tiles``/``tile_geo`` pair is a last-event slot: the
+    last pushed chunk of the last render. Keys agree between the two
+    traits, each key is a tile of the viewport's plan, each
+    ``tile_geo`` entry is the exact level-px crop, and the payload is
+    JPEG. (The per-chunk push mechanics — one push per chunk, the union
+    of a render's pushes the full set — are covered over the synchronous
+    widget in test_widget_chunks.py.)"""
     viewer.wait()
-    plan = viewer.render()
+    _wait_bg(viewer)
+    plan = plan_viewport(viewer._meta, viewer._vp_current, viewer.tile_size)
     tiles, geo = viewer.tiles, viewer.tile_geo
-    assert set(tiles) == set(geo)
-    assert len(tiles) == len(plan.tiles) and len(tiles) > 0
+    last_keys = {
+        f"{t.key[0]}:{t.key[1]}:{t.key[2]}" for t in plan.chunks[-1].tiles
+    }
+    assert set(tiles) == last_keys
+    assert set(geo) == last_keys
     for key, url in tiles.items():
         assert url.startswith("data:image/jpeg;base64,")
         level, tx, ty = _key_of(key)
@@ -203,7 +241,7 @@ def test_tiles_and_tile_geo_contract(viewer):
         assert cw > 0 and ch > 0
         assert ox + cw <= lw and oy + ch <= lh
     # geo matches the plan exactly (level-space crop origins)
-    for t in plan.tiles:
+    for t in plan.chunks[-1].tiles:
         k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
         x0, y0, x1, y1 = t.crop
         rx, ry = plan.read_origin
@@ -212,21 +250,22 @@ def test_tiles_and_tile_geo_contract(viewer):
 
 def test_revisit_after_pan_serves_identical_tiles(viewer):
     """Cache invariant end-to-end through the widget: revisiting a
-    panned viewport must produce byte-identical tile payloads."""
+    panned viewport must produce byte-identical tile payloads (compare
+    the full render push unions — the traits themselves hold only the
+    last chunk)."""
     viewer.wait()
-    first = dict(viewer.tiles)
-    viewer.center_on(23000, 16457)
-    viewer.set_zoom(2.0)
-    mid = dict(viewer.tiles)
-    viewer.center_on(20000, 20000)
+    _wait_bg(viewer)
+    first = _capture_render(viewer, lambda: viewer.set_zoom(2.0))
+    # pan away (unobserved intermediate renders)
+    viewer.center_on(10000, 10000)
     viewer.set_zoom(4.0)
+    _wait_bg(viewer)
     viewer.center_on(23000, 16457)
-    viewer.set_zoom(2.0)
-    again = dict(viewer.tiles)
-    # 1:1-ish center revisit of the same viewport -> identical payload
-    assert again == mid
-    # panning changed something (otherwise the test is vacuous)
-    assert set(first) != set(again)
+    _wait_bg(viewer)
+    again = _capture_render(viewer, lambda: viewer.set_zoom(2.0))
+    # same viewport revisit -> byte-identical payloads
+    assert len(again) > 0
+    assert again == first
 
 
 # ------------------------------------------------------------ programmatic
@@ -260,9 +299,15 @@ def test_viewport_bbox_and_read_crop(viewer):
 
 def test_render_returns_readplan(viewer):
     viewer.wait()
+    _wait_bg(viewer)
     plan = viewer.render()
+    assert plan is not None
     assert plan.level >= 0
-    assert len(plan.tiles) == len(viewer.tiles)
+    # last-event semantics: the traits hold the render's last chunk
+    # (the same-viewport re-render's pushes are value-equal no-ops)
+    assert set(viewer.tiles) == {
+        f"{t.key[0]}:{t.key[1]}:{t.key[2]}" for t in plan.chunks[-1].tiles
+    }
 
 
 def test_js_originated_viewport_triggers_background_render(viewer):
@@ -277,6 +322,55 @@ def test_js_originated_viewport_triggers_background_render(viewer):
         time.sleep(0.01)
     assert before != viewer.status  # background render reported the new plan
     assert viewer.tiles  # repopulated by the background render
+
+
+def test_resync_repairs_attach_seed(viewer):
+    """Attach is seed + resync, and together they are the full viewport:
+    the JS view seeds its image cache from the trait values (the last
+    chunk of the last render — last-event slots) and bumps ``resync``
+    once per attach; the Python observer re-renders the current viewport,
+    whose per-chunk pushes fill in every chunk the seed is missing (the
+    one push that is a value-equal no-op is exactly the chunk the seed
+    holds). Needed because the view's fit-echo alone can be a no-op on
+    the Python side (a value-equal viewport set fires no observer)."""
+    viewer.wait()
+    _wait_bg(viewer)
+    plan = plan_viewport(viewer._meta, viewer._vp_current, viewer.tile_size)
+    # attach: seed from the last-event traits (what the JS view does)
+    state = dict(viewer.tiles or {})
+    state_geo = dict(viewer.tile_geo or {})
+    pushes: list[dict] = []
+    geo_pushes: list[dict] = []
+    ob_t = viewer.observe(lambda c: pushes.append(c["new"]), names="tiles")
+    ob_g = viewer.observe(
+        lambda c: geo_pushes.append(c["new"]), names="tile_geo"
+    )
+    try:
+        # what the JS view does once per attach
+        viewer.resync = viewer.resync + 1
+        _wait_bg(viewer)
+    finally:
+        viewer.unobserve(ob_t, names="tiles")
+        viewer.unobserve(ob_g, names="tile_geo")
+    for p in pushes:
+        state.update(p)
+    for p in geo_pushes:
+        state_geo.update(p)
+    # seed + the resync render's pushes = the full viewport set
+    assert set(state) == {
+        f"{t.key[0]}:{t.key[1]}:{t.key[2]}" for t in plan.tiles
+    }
+    rx, ry = plan.read_origin
+    assert state_geo == {
+        f"{t.key[0]}:{t.key[1]}:{t.key[2]}": [
+            t.key[0],
+            rx + t.crop[0],
+            ry + t.crop[1],
+            t.crop[2] - t.crop[0],
+            t.crop[3] - t.crop[1],
+        ]
+        for t in plan.tiles
+    }
 
 
 # ------------------------------------------------------------------- errors

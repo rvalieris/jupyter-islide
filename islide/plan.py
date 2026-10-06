@@ -12,8 +12,8 @@ Coordinate models (verified against libopenslide, see docs/DESIGN.md §8):
 The plan's tiles are additionally grouped into chunks (docs/DESIGN.md
 §6.6) — grid-anchored 4x4-cell (1024-px at the default cell) blocks,
 center-first by distance from the viewport center. Each chunk is one
-covering read; the widget pushes the center chunk first, then the full
-tile set.
+covering read; the widget pushes the chunks one at a time in that order
+(per-chunk push, docs/DESIGN.md §6.6.2).
 """
 from __future__ import annotations
 
@@ -60,9 +60,9 @@ class ReadPlan:
     ``loc``/``size``/``read_origin`` describe the *union* read rect (the
     single covering read of the pre-chunk pipeline); ``chunks`` splits the
     same tiles into grid-anchored 1024-px blocks, center-first — the
-    widget pushes the center chunk first, then the full tile set
-    (docs/DESIGN.md §6.6). A viewport small enough for one block is a
-    single-chunk plan.
+    widget pushes the chunks one at a time in that order (docs/DESIGN.md
+    §6.6.2). A viewport small enough for one block is a single-chunk
+    plan.
     """
 
     level: int
@@ -166,8 +166,8 @@ def plan_viewport(
     global (aligned to 0 at every zoom), so tiles are cache-stable across
     pan/zoom. The tiles are also grouped into chunks (grid-anchored 4x4-cell
     blocks, center-first; docs/DESIGN.md §6.6) — each chunk is
-    one ``read_region``; the widget pushes the center chunk first, then
-    the full tile set.
+    one ``read_region``; the widget pushes the chunks one at a time in
+    center-first order, each chunk after its own read lands.
     """
     level = select_level(meta.level_downsamples, vp.zoom)
     ds = meta.level_downsamples[level]
