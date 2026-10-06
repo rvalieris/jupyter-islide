@@ -61,7 +61,8 @@
 The wheel is built by `hatchling` with the `hatch-jupyter-builder` hook
 (`[tool.hatch.build.hooks.jupyter-builder]` in `pyproject.toml`). At wheel
 build time the hook runs `npm install` + `npm run build` in `frontend/` —
-i.e. `jupyter labextension build .` — producing `frontend/labextension/`
+i.e. `node sync-version.mjs` (the npm `prebuild` hook) +
+`jupyter-builder build .` — producing `frontend/labextension/`
 (the `outputDir` in `frontend/package.json`). hatchling's `shared-data` then
 places that directory at `share/jupyter/labextensions/jupyter-islide/` inside
 the wheel, the standard JupyterLab 4 labextensions discovery path. So:

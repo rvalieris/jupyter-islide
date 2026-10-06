@@ -187,8 +187,11 @@ and slice it into tiles. Consequences:
 - **Slide handle**: `OpenSlide` objects are opened synchronously in the
   widget constructor (opening large SVS files can take seconds; the
   constructor blocks until open, and raises on failure) and kept open while
-  the viewer is live; closed on widget disposal (`on_widget_disposed`) and
-  by `close()`.
+  the viewer is live; released by `close()` (which waits for an in-flight
+  background render) and, when the frontend disposes the widget without
+  `close()` being called, by the comm `on_close` handler registered in the
+  constructor (ipywidgets 8 has no Python-side dispose hook, and a
+  kernel-side `close()` does not fire the comm's `on_close`).
 - **Minimap image** and slide **metadata** computed once at open.
 
 ### 5.3 Encoding choice
@@ -642,7 +645,7 @@ multi-threaded fetch pass.
 
 ## 10. Testing
 
-Two suites, no browser required — 301 Python tests
+Two suites, no browser required — 307 Python tests
 (`python -m pytest tests/`) and 113 JS tests
 (`cd frontend && node --test test/`). Because the widget is a plain
 Python object until displayed, the whole Python-side state machine is

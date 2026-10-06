@@ -209,3 +209,32 @@ def test_rapid_js_viewports_coalesce_to_final_plan(viewer):
         union.update(p)
     assert set(union) == {key(t.key) for t in plan.tiles}
     assert viewer.tiles == final_pushes[-1]
+
+
+# -------------------------------------------------------------- lifecycle
+def test_close_releases_backend_and_is_idempotent(viewer):
+    fake = viewer.backend._os
+    viewer.close()
+    assert fake.closed
+    assert viewer.backend is None and not viewer.slide_open
+    viewer.close()  # idempotent
+
+
+def test_frontend_comm_close_releases_backend(viewer):
+    """Frontend disposal (e.g. clearing the cell output) sends a comm
+    close with no Python-side dispose hook in ipywidgets 8; the
+    on_close handler registered in the constructor releases the
+    kernel-side slide handle (docs/DESIGN.md §5.2)."""
+    fake = viewer.backend._os
+    viewer.comm.on_close({})  # what the comm machinery calls
+    assert fake.closed
+    assert viewer.backend is None and not viewer.slide_open
+
+
+def test_close_waits_for_inflight_background_render(viewer):
+    """close() must not close the slide handle out from under a running
+    background render: it blocks until the render thread finishes."""
+    viewer.set_zoom(2.0)  # schedules a background render
+    viewer.close()
+    assert viewer.backend is None
+    assert not viewer._rendering_bg

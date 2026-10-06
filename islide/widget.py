@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -314,6 +315,16 @@ class SlideViewer(widgets.DOMWidget):
         self.observe(self._on_resync_change, names="resync")
         self._open()
 
+        # Frontend-initiated disposal (e.g. clearing the cell output) sends
+        # a comm close without any Python-side dispose hook in ipywidgets 8,
+        # and a kernel-side close() likewise does not fire the comm's
+        # on_close. Register the handler explicitly so the OpenSlide handle
+        # is released on the frontend path too. _close_backend is
+        # idempotent, so this is safe whether or not close() was also
+        # called from Python.
+        if self.comm is not None:
+            self.comm.on_close = lambda msg: self._close_backend()
+
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
         if self._initial_slide is not None:
@@ -352,6 +363,22 @@ class SlideViewer(widgets.DOMWidget):
         return jpeg_data_url(backend.thumbnail((mw, height)))
 
     def close(self) -> None:
+        """Close the slide handle and release the widget.
+
+        Idempotent — safe to call multiple times, or after a re-run cell
+        created a new widget while this one was still open. Blocks until
+        an in-flight background render finishes, so the render thread
+        never touches a closed slide handle.
+        """
+        deadline = time.monotonic() + 10
+        while self._rendering_bg and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self._close_backend()
+        super().close()
+
+    def _close_backend(self) -> None:
+        """Release the OpenSlide handle (idempotent; also run from the
+        comm on_close handler when the frontend disposes the widget)."""
         if self._closed:
             return
         self._closed = True
@@ -359,7 +386,6 @@ class SlideViewer(widgets.DOMWidget):
         if self.backend is not None:
             self.backend.close()
             self.backend = None
-        super().close()
 
     # ----------------------------------------------------------- state access
     @property
