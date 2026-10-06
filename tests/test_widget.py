@@ -168,6 +168,27 @@ def test_runtime_canvas_h_rebases_viewport_and_replans(viewer):
     assert viewer.tiles is not tiles_before  # background re-render ran
 
 
+def test_image_cache_max_trait(viewer, slide_path):
+    """The decoded-tile cache cap (both sides): synced trait, positive int
+    only, and the kernel cache follows it at runtime."""
+    from traitlets import TraitError
+
+    assert viewer.image_cache_max == 1000  # default
+    assert viewer.cache.max_tiles == 1000
+    with pytest.raises(TraitError):
+        viewer.image_cache_max = 0  # rejected, keeps the old value
+    assert viewer.image_cache_max == 1000
+    assert viewer.cache.max_tiles == 1000
+    viewer.image_cache_max = 800
+    assert viewer.cache.max_tiles == 800
+    v = SlideViewer(slide_path, image_cache_max=100)
+    try:
+        assert v.image_cache_max == 100
+        assert v.cache.max_tiles == 100
+    finally:
+        v.close()
+
+
 def test_minimap_is_jpeg_data_url(viewer):
     assert viewer.minimap_img.startswith("data:image/jpeg;base64,")
 

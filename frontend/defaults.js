@@ -9,6 +9,9 @@ export const SLIDE_MODEL_DEFAULTS = {
   meta: null,
   viewport: null,
   canvas_h: 540,
+  // The single decoded-tile cache cap (tile count): this view's decoded
+  // image cache and the kernel's TileCache (both LRU, same keys).
+  image_cache_max: 1000,
   tiles: {},
   tile_geo: {},
   minimap_img: '',

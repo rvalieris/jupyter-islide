@@ -100,7 +100,7 @@ notebook, drive it from Python.
 │    │    └─ read_region() ─► PIL.Image (RGBA)               │
 │    ├─ plan  (viewport ─► grid-anchored, center-first reads)│
 │    ├─ fetch (chunks ─► cache ─► one read per chunk, crop)  │
-│    ├─ TileCache   (LRU, byte-budgeted, holds PIL images)   │
+│    ├─ TileCache   (LRU, count-budgeted, holds PIL images) │
 │    └─ state: SlideMeta, Viewport, annotation document      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -179,11 +179,13 @@ and slice it into tiles. Consequences:
 ### 5.2 Caching
 
 - **TileCache**: LRU keyed by `(level, tx, ty)`, valued by PIL image
-  (decoded, kept in `RGBA`). Budgeted by decoded-size estimate `w·h·4`
-  (default 256 MB, configurable). Eviction is by bytes, not count. Key
-  validity rests on the grid-anchored read rect (§5, step 1): the cached
-  image for a cell is always exactly `cell ∩ slide bounds`, at every zoom
-  and viewport.
+  (decoded, kept in `RGBA`). Budgeted by tile *count* (`image_cache_max`,
+  default 1000 — tiles are grid-anchored `tile_size` level-px cells, so
+  at most `tile_size²·4` bytes each, and the count bounds memory
+  closely). Same cap and key scheme as the JS view's decoded-image
+  cache: one user setting, both sides. Key validity rests on the
+  grid-anchored read rect (§5, step 1): the cached image for a cell is
+  always exactly `cell ∩ slide bounds`, at every zoom and viewport.
 - **Slide handle**: `OpenSlide` objects are opened synchronously in the
   widget constructor (opening large SVS files can take seconds; the
   constructor blocks until open, and raises on failure) and kept open while
@@ -315,8 +317,8 @@ Between round-trips the view keeps a **local transform**
 (`{cx, cy, zoom, canvasW, canvasH}`) and reprojects the *same* tile
 geometry (`tile_geo`, absolute level-pixel crops) under it — pan/zoom is
 instant, then the debounced sync triggers the next Python tile pass. The
-view caches decoded tile images (insertion-order LRU, 400 entries) so
-back-pans are canvas-only.
+view caches decoded tile images (insertion-order LRU, `image_cache_max`
+entries, default 400) so back-pans are canvas-only.
 
 The annotation updates are the same shape of one-way updates
 (`last_polygon`, §6.4; `annotation_edit`, §6.5), so the same round-trip
@@ -421,7 +423,8 @@ wholesale: the old level vanishes and the new one pops in at 100 % the
 moment the push lands. The cross-fade (OSD's `blendTime` idea) instead:
 
 - **Accumulated tile map.** The view already merges `tiles` into
-  `this._images` (insertion-order LRU, 400 entries, never evicts a
+  `this._images` (insertion-order LRU, `image_cache_max` entries,
+  never evicts a
   still-visible key in practice). `tile_geo` accumulates the same way:
   a view-local `_tileGeo` map merged per push, evicted in lockstep with
   `_images` (same key, same budget). `drawScene` draws from `_tileGeo`,
@@ -453,7 +456,7 @@ moment the push lands. The cross-fade (OSD's `blendTime` idea) instead:
 - Big zoom jumps that skip an intermediate level fade directly
   (old level out, endpoint in); OSD behaves the same.
 
-Memory: the cross-fade transiently holds two levels; the 400-entry image
+Memory: the cross-fade transiently holds two levels; the `image_cache_max` image
 LRU is sized for this (a 960×540 canvas needs well under 100 tiles per
 level). Tile *transfer* is unchanged — the kernel pushes exactly the
 plan's level per viewport; the fade is over data already in transit/on
@@ -514,7 +517,7 @@ Animated pan/zoom (springs — wheel/drag/minimap/toolbar and programmatic
 animation), WebGL compositing, off-screen prefetch (the LRU covers
 back-pans), per-tile (sub-level) fades, parallel fetch threads, touch
 pinch, keyboard navigation, OSD-style reference strip. Unchanged: the 120
-ms debounce, `read_crop`, the Python API, `TileCache` (byte budget,
+ms debounce, `read_crop`, the Python API, `TileCache` (count budget,
 keying), the OpenSlide backend.
 
 ## 7. Python API
@@ -581,6 +584,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
 | `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
+| `image_cache_max` | Py→JS | int | the single decoded-tile cache cap (tile count, default 1000): the JS view's decoded image cache *and* the kernel `TileCache` (both LRU, same keys); user-settable at construction or runtime; a decrease re-limits both caches |
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — last-event slot: a render pushes one chunk at a time (viewport-center-first, §6.6.2), so the trait holds the **last chunk** while the JS view accumulates the render's pushes (merges, never evicts per push) into the full viewport |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
@@ -636,7 +640,7 @@ openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
 | Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
 | Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms); each remaining chunk is pushed as its own read lands, in the same render pass |
 | Tile transfer per full viewport | ≤ ~400 KB (≈ 20 tiles × 20 KB JPEG) |
-| Steady-state memory (cache on) | 256 MB default budget + slide handle overhead |
+| Steady-state memory (cache on) | ≤ ~256 MB per side, worst case (`image_cache_max` 1000 tiles × ≤ 256 KB decoded) + slide handle overhead |
 | Idle CPU | 0 (no polling; everything is trait-driven) |
 
 Explicit non-goals: no prefetching of off-screen tiles (the LRU cache

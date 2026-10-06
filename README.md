@@ -67,9 +67,13 @@ v.canvas_h = 900            # resize the viewport height (CSS px);
                             # also a constructor arg: SlideViewer(path, canvas_h=900)
 ```
 
-Other constructor args: `canvas_w`, `tile_size`, `cache_max_mb` and
+Other constructor args: `canvas_w`, `tile_size`, `image_cache_max` and
 `jpeg_quality` (tile JPEG quality, 1–95, default 85 — the minimap and the
-`read_crop` path are unaffected).
+`read_crop` path are unaffected). `image_cache_max` (default 1000 tiles;
+set at construction or at runtime via `v.image_cache_max = N`) is the
+single cap on the decoded-tile image caches: the view's decoded images
+*and* the kernel-side `TileCache` (both LRU over the same tile keys, in
+tile count) — a runtime decrease evicts on both sides immediately.
 
 **Annotations.** Import a GeoJSON document — a file path or
 a parsed dict: a `FeatureCollection` of `{id, geometry, properties}`
@@ -234,7 +238,7 @@ islide/
   annotations.py  GeoJSON document -> canonical annotation document (pure)
                  + apply_edit (the pure delete/set_label/set_color/
                               set_vertex/add_vertex ops)
-  cache.py     byte-budgeted LRU tile cache
+  cache.py     count-budgeted LRU tile cache
   backend.py   SlideBackend protocol + OpenSlideBackend
   fetch.py     plan -> tiles (cache lookups + one read per chunk, cropped)
   encode.py    tile -> JPEG data URL

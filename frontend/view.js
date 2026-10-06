@@ -29,7 +29,7 @@ import {
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
-const MAX_CACHED_IMAGES = 400;
+const DEFAULT_CACHED_IMAGES = 1000; // fallback when the trait is absent
 const MIN_ZOOM_PAD = 4; // min zoom = fit / 4 (matches the Python side)
 const MAX_ZOOM = 16;
 
@@ -161,6 +161,7 @@ export class SlideView extends DOMWidgetView {
     this.listenTo(this.model, 'change:minimap_img', this._onMinimapChange);
     this.listenTo(this.model, 'change:status', this._onStatusChange);
     this.listenTo(this.model, 'change:canvas_h', this._applyCanvasHeight);
+    this.listenTo(this.model, 'change:image_cache_max', this._onImageCacheMaxChange);
     this.listenTo(this.model, 'change:annotations', this._onAnnotationsChange);
     this.listenTo(this.model, 'change:overlay_img', this._onOverlayImgChange);
     this.listenTo(this.model, 'change:overlay_alpha', this._requestDraw);
@@ -389,11 +390,34 @@ export class SlideView extends DOMWidgetView {
       img.src = url;
       this._images.set(key, img);
     }
-    while (this._images.size > MAX_CACHED_IMAGES) {
+    this._evictImages();
+  }
+
+  /** The decoded-tile image cap: the user-settable `image_cache_max`
+   * trait (Python `v.image_cache_max = N`), falling back to the default.
+   */
+  _imageCacheMax() {
+    const cap = Number(this.model.get('image_cache_max'));
+    return Number.isInteger(cap) && cap > 0 ? cap : DEFAULT_CACHED_IMAGES;
+  }
+
+  /** LRU-evict down to the cap; geometry evicts in lockstep with images
+   * (a stale geo entry without its image would draw a missing tile).
+   */
+  _evictImages() {
+    while (this._images.size > this._imageCacheMax()) {
       const key = this._images.keys().next().value;
       this._images.delete(key);
-      delete this._tileGeo[key]; // evict geometry in lockstep with images
+      delete this._tileGeo[key];
     }
+  }
+
+  /** Cap changed at runtime: evict immediately if the cache grew past the
+   * new (lower) cap; the evicted tiles come back on the next render.
+   */
+  _onImageCacheMaxChange() {
+    this._evictImages();
+    this._requestDraw();
   }
 
   // ------------------------------------------------------------- viewport

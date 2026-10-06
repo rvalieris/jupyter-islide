@@ -173,6 +173,11 @@ class SlideViewer(widgets.DOMWidget):
       (``v.canvas_h = 900``). The JS view applies it to the canvas; its
       ResizeObserver then syncs the resized viewport back, which re-plans
       the tiles. Headless, the viewport is re-based directly.
+    * ``image_cache_max`` (synced int) is the single decoded-tile cache
+      cap: the JS view's decoded image cache *and* the kernel's
+      :class:`TileCache` (both LRU, same ``level:tx:ty`` keys, counted
+      in tiles; ``v.image_cache_max = 2000``, default 1000). Setting it
+      at runtime re-limits both caches (a decrease evicts immediately).
     * ``annotation_edit`` (JS->Py last-event slot, docs/DESIGN.md §6.5)
       carries one view edit command (``delete`` / ``set_label`` /
       ``set_color`` / ``set_vertex`` / ``add_vertex``); the Python
@@ -194,12 +199,22 @@ class SlideViewer(widgets.DOMWidget):
     meta = Dict(default_value=None, allow_none=True).tag(sync=True)  # SlideMeta as a dict
     viewport = Dict(default_value=None, allow_none=True).tag(sync=True)  # _vp_dict
     canvas_h = Int(540).tag(sync=True)  # on-screen viewport height (CSS px)
+    # The single decoded-tile cache cap (tile count): the JS view's decoded
+    # image cache and the kernel TileCache (both LRU, same keys).
+    image_cache_max = Int(1000).tag(sync=True)
 
     @validate("canvas_h")
     def _check_canvas_h(self, proposal):
         v = int(proposal["value"])
         if v <= 0:
             raise TraitError("canvas_h must be a positive number of CSS px")
+        return v
+
+    @validate("image_cache_max")
+    def _check_image_cache_max(self, proposal):
+        v = int(proposal["value"])
+        if v <= 0:
+            raise TraitError("image_cache_max must be a positive int")
         return v
 
     tiles = Dict({}).tag(sync=True)  # "L:tx:ty" -> JPEG data URL
@@ -265,7 +280,7 @@ class SlideViewer(widgets.DOMWidget):
         canvas_w: int = 960,
         canvas_h: int = 540,
         tile_size: int = 256,
-        cache_max_mb: int = 256,
+        image_cache_max: int = 1000,
         *,
         slide: Any | None = None,
         jpeg_quality: int = 85,
@@ -275,6 +290,11 @@ class SlideViewer(widgets.DOMWidget):
 
         ``jpeg_quality`` (1–95) is the JPEG quality of the tile data URLs
         (the minimap/thumbnail keep the default 85).
+
+        ``image_cache_max`` caps the decoded-tile image caches — the
+        JS view's decoded images *and* the kernel's :class:`TileCache`
+        (both LRU, counted in tiles; set at construction or at runtime
+        via ``v.image_cache_max = N``).
         """
         super().__init__()
         # Teardown state before anything that can raise, so __del__/close()
@@ -294,8 +314,9 @@ class SlideViewer(widgets.DOMWidget):
         self._jpeg_quality = q
         self._canvas_w = int(canvas_w)
         self.canvas_h = int(canvas_h)
+        self.image_cache_max = int(image_cache_max)
         self.tile_size = int(tile_size)
-        self.cache = TileCache(int(cache_max_mb * 1024 * 1024))
+        self.cache = TileCache(int(image_cache_max))
         self._meta: SlideMeta | None = None
         self._min_zoom = 1e-9
         self._max_zoom = 16.0
@@ -310,6 +331,7 @@ class SlideViewer(widgets.DOMWidget):
         # any later programmatic update.
         self.observe(self._on_viewport_change, names="viewport")
         self.observe(self._on_canvas_h_change, names="canvas_h")
+        self.observe(self._on_image_cache_max_change, names="image_cache_max")
         self.observe(self._on_last_polygon_change, names="last_polygon")
         self.observe(self._on_annotation_edit_change, names="annotation_edit")
         self.observe(self._on_resync_change, names="resync")
@@ -425,6 +447,14 @@ class SlideViewer(widgets.DOMWidget):
             # (deduped in _sendViewport); headless, this is what triggers
             # the background re-render of the resized viewport.
             self.viewport = dict(self.viewport, canvas_h=h)
+
+    def _on_image_cache_max_change(self, change: dict) -> None:
+        """Runtime cap change: re-limit the kernel cache (the JS view
+        re-limits its own from the trait). A decrease evicts immediately;
+        evicted tiles are re-fetched on the next render. The observer is
+        registered after the constructor's initial assignment, so it only
+        fires for later (user/wire) changes."""
+        self.cache.relimit(int(self.image_cache_max))
 
     # ------------------------------------------------------ viewport handling
     def _set_viewport_sync(self, vp: Viewport) -> None:
