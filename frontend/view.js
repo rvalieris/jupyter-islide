@@ -194,10 +194,12 @@ export class SlideView extends DOMWidgetView {
   _onViewportChange() {
     const vp = this.model.get('viewport');
     if (vp) {
-      // Apply Python's viewport (programmatic API / initial fit). Never
-      // re-send from here: interaction-only updates are the sole writers
-      // of the `viewport` trait from the JS side.
-      this._transform = math.viewportToTransform(vp);
+      // Apply Python's viewport (programmatic API / initial fit). The
+      // wire form carries no canvas height: the `canvas_h` trait is the
+      // source of truth (applied to the canvas in _applyCanvasHeight).
+      // Never re-send from here: interaction-only updates are the sole
+      // writers of the `viewport` trait from the JS side.
+      this._transform = math.viewportToTransform(vp, this.model.get('canvas_h'));
     }
     this._requestDraw();
   }
@@ -371,6 +373,15 @@ export class SlideView extends DOMWidgetView {
     const h = this.model.get('canvas_h');
     if (h) {
       this._canvasWrap.style.height = `${h}px`;
+      // The wire viewport carries no canvas height, so keep the local
+      // transform's projection height in step with the trait between
+      // syncs (the ResizeObserver's debounced send is deduped — same
+      // wire form).
+      const t = this._transform;
+      if (t && t.canvasH !== h) {
+        this._transform = { ...t, canvasH: h };
+        this._requestDraw();
+      }
     }
   }
 
@@ -465,8 +476,7 @@ export class SlideView extends DOMWidgetView {
     if (this._lastSentViewport && vp.cx === this._lastSentViewport.cx &&
         vp.cy === this._lastSentViewport.cy &&
         vp.zoom === this._lastSentViewport.zoom &&
-        vp.canvas_w === this._lastSentViewport.canvas_w &&
-        vp.canvas_h === this._lastSentViewport.canvas_h) {
+        vp.canvas_w === this._lastSentViewport.canvas_w) {
       return;
     }
     this._lastSentViewport = vp;

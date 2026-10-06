@@ -11,7 +11,7 @@ except ImportError:
 from islide.backend import OpenSlideBackend
 from islide.cache import TileCache
 from islide.encode import jpeg_data_url
-from islide.fetch import fetch_tiles
+from islide.fetch import fetch_chunk
 from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import Viewport
 
@@ -57,7 +57,9 @@ def test_render_roundtrip(backend):
     vp = Viewport(cx=W / 2, cy=H / 2, zoom=0.007, canvas_w=960, canvas_h=540)
     plan = plan_viewport(backend.meta, vp, 256)
     assert plan.tiles
-    tiles = fetch_tiles(cb, cache, plan)
+    tiles: dict = {}
+    for chunk in plan.chunks:
+        tiles.update(fetch_chunk(cb, cache, chunk, plan))
     assert cb.reads == 1  # one big read for the whole viewport
     for t in plan.tiles:
         img = tiles[t.key]
@@ -75,10 +77,12 @@ def test_cache_warm_second_fetch_no_reads(backend):
     vp = Viewport(cx=W / 2, cy=H / 2, zoom=1.0, canvas_w=960, canvas_h=540)
     plan = plan_viewport(backend.meta, vp, 256)
     assert plan.level == 0  # zoom 1.0 -> level 0
-    fetch_tiles(cb, cache, plan)
+    for chunk in plan.chunks:
+        fetch_chunk(cb, cache, chunk, plan)
     n = cb.reads
     assert n >= 1
-    fetch_tiles(cb, cache, plan)  # same viewport: everything from cache
+    for chunk in plan.chunks:
+        fetch_chunk(cb, cache, chunk, plan)  # everything from cache now
     assert cb.reads == n
 
 
@@ -113,7 +117,8 @@ def test_tile_cache_is_viewport_invariant(backend):
         vp = Viewport(cx=8192 + dx, cy=8192 + dy, zoom=16.0, canvas_w=300, canvas_h=300)
         plan = plan_viewport(backend.meta, vp, T)
         assert plan.level == 0
-        fetch_tiles(backend, cache, plan)
+        for chunk in plan.chunks:
+            fetch_chunk(backend, cache, chunk, plan)
         for t in plan.tiles:
             _, tx, ty = t.key
             img = cache.get(t.key)

@@ -306,11 +306,14 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 
 All navigation mutates the **viewport trait** — the *only* JS→Python
 channel for navigation. The wire form is
-`{cx, cy, zoom, canvas_w, canvas_h}`: slide-center + zoom plus the canvas
-size (so Python can plan exactly what the view sees, and so programmatic
-`set_zoom`/`center_on` round-trip through the same shape). The view is the
-**sole writer** of `viewport` from JS: it never echoes Python's viewport
-back, it only sends interaction-driven updates (debounced 120 ms,
+`{cx, cy, zoom, canvas_w}`: slide-center + zoom plus the canvas *width*
+(the width is JS-owned — the view's actual width after sidebar resizes —
+while the canvas *height* never crosses the wire: the `canvas_h` synced
+trait is the source of truth on both sides, so Python can plan exactly
+what the view sees, and programmatic `set_zoom`/`center_on` round-trip
+through the same shape). The view is the **sole writer** of `viewport`
+from JS: it never echoes Python's viewport back, it only sends
+interaction-driven updates (debounced 120 ms,
 coalesced by Python onto one background render thread).
 
 Between round-trips the view keeps a **local transform**
@@ -318,7 +321,7 @@ Between round-trips the view keeps a **local transform**
 geometry (`tile_geo`, absolute level-pixel crops) under it — pan/zoom is
 instant, then the debounced sync triggers the next Python tile pass. The
 view caches decoded tile images (insertion-order LRU, `image_cache_max`
-entries, default 400) so back-pans are canvas-only.
+entries, default 1000) so back-pans are canvas-only.
 
 The annotation updates are the same shape of one-way updates
 (`last_polygon`, §6.4; `annotation_edit`, §6.5), so the same round-trip
@@ -479,12 +482,13 @@ time — no heap):
   A plan whose viewport fits one block is a single chunk — the
   whole-viewport plan byte-for-byte, including the common zoomed-out
   case.
-- `fetch_chunk` (one block) / `fetch_tiles` (the whole plan, in chunk
-  order) read one `read_region` per chunk — a chunk is skipped when
-  every tile in it is cached; otherwise one `read_region` for the block,
-  crop, cache — the §5.1 "one big read, crop in Python" strategy, just
-  smaller and ordered. ~4 chunks for a 1280×720 canvas; the extra decode
-  setups are cheap against a single viewport-sized read.
+- `fetch_chunk` (the public fetch layer; the render path, §6.6.2, calls
+  it once per chunk, center-first) reads one `read_region` per chunk —
+  a chunk is skipped when every tile in it is cached; otherwise one
+  `read_region` for the block, crop, cache — the §5.1 "one big read,
+  crop in Python" strategy, just smaller and ordered. ~4 chunks for a
+  1280×720 canvas; the extra decode setups are cheap against a single
+  viewport-sized read.
 - **Per-chunk push** (this is what makes center-first visible):
   `_render_once` pushes `tiles`/`tile_geo` **once per chunk**, in the
   plan's viewport-center-first order, each chunk after its own
@@ -582,8 +586,8 @@ test — Python trait set == `frontend/defaults.js` keys):
 |---|---|---|---|
 | `slide_open` | Py→JS | bool | always `True` once the widget is constructed (open is synchronous in the constructor; a failed open raises before the widget exists) |
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
-| `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
-| `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
+| `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w}` (level-0 center + zoom + canvas width; the canvas height is not in the wire form — see `canvas_h`) |
+| `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas, and the Python observer re-plans the current viewport at the new height (never crosses the wire) |
 | `image_cache_max` | Py→JS | int | the single decoded-tile cache cap (tile count, default 1000): the JS view's decoded image cache *and* the kernel `TileCache` (both LRU, same keys); user-settable at construction or runtime; a decrease re-limits both caches |
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — last-event slot: a render pushes one chunk at a time (viewport-center-first, §6.6.2), so the trait holds the **last chunk** while the JS view accumulates the render's pushes (merges, never evicts per push) into the full viewport |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
@@ -649,11 +653,10 @@ multi-threaded fetch pass.
 
 ## 10. Testing
 
-Two suites, no browser required — 307 Python tests
-(`python -m pytest tests/`) and 113 JS tests
-(`cd frontend && node --test test/`). Because the widget is a plain
-Python object until displayed, the whole Python-side state machine is
-tested headless, and the JS pure modules are tested against mock 2D
+Two suites, no browser required — Python (`python -m pytest tests/`)
+and JS (`cd frontend && node --test test/`). Because the widget is a
+plain Python object until displayed, the whole Python-side state machine
+is tested headless, and the JS pure modules are tested against mock 2D
 contexts. Full per-file coverage table, the test slide sourcing, and the
 cross-language trait-contract guard:
 [docs/testing.md](docs/testing.md).

@@ -191,7 +191,7 @@ def test_rapid_js_viewports_coalesce_to_final_plan(viewer):
     for i in range(n):
         viewer.viewport = {
             "cx": 1200 + i * 200, "cy": 2000, "zoom": 1.0,
-            "canvas_w": 960, "canvas_h": 540,
+            "canvas_w": 960,
         }
         time.sleep(0.002)
     deadline = time.monotonic() + 10

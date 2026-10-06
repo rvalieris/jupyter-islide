@@ -43,15 +43,3 @@ def fetch_chunk(
     return result
 
 
-def fetch_tiles(backend: Any, cache: Any, plan: ReadPlan) -> dict[tuple, Any]:
-    """Return ``{tile.key: PIL image}`` for every tile in the plan.
-
-    Tiles are fetched per chunk, in chunk order (center-first for a
-    multi-chunk plan): each chunk's cache misses are satisfied by one
-    ``read_region`` for its read rect, sliced into tiles and cached.
-    A single-chunk plan does exactly one covering read — the whole plan.
-    """
-    result: dict[tuple, Any] = {}
-    for chunk in plan.chunks:
-        result.update(fetch_chunk(backend, cache, chunk, plan))
-    return result

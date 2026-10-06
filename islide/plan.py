@@ -57,19 +57,17 @@ class Chunk:
 class ReadPlan:
     """How to satisfy a viewport: chunked region reads, sliced into tiles.
 
-    ``loc``/``size``/``read_origin`` describe the *union* read rect (the
-    single covering read of the pre-chunk pipeline); ``chunks`` splits the
-    same tiles into grid-anchored 1024-px blocks, center-first — the
-    widget pushes the chunks one at a time in that order (docs/DESIGN.md
-    §6.6.2). A viewport small enough for one block is a single-chunk
-    plan.
+    ``read_origin`` is the top-left of the *union* read rect (the grid
+    cells covering the viewport, clamped to the level) in level px; tile
+    crops are relative to it. ``chunks`` splits the same tiles into
+    grid-anchored 1024-px blocks, center-first — the widget pushes the
+    chunks one at a time in that order (docs/DESIGN.md §6.6.2). A
+    viewport small enough for one block is a single-chunk plan.
     """
 
     level: int
     downsample: float
-    loc: tuple[int, int]  # level-0 location for read_region
-    size: tuple[int, int]  # read size in level-``level`` pixels
-    read_origin: tuple[int, int]  # level px of the read image's top-left
+    read_origin: tuple[int, int]  # level px of the union read rect's top-left
     tiles: tuple[Tile, ...]
     chunks: tuple[Chunk, ...]
 
@@ -186,7 +184,7 @@ def plan_viewport(
     ty0 = math.floor(ly0 / t)
     ty1 = math.ceil(ly1 / t) - 1
     if tx1 < tx0 or ty1 < ty0:
-        return ReadPlan(level, ds, (0, 0), (0, 0), (0, 0), (), ())
+        return ReadPlan(level, ds, (0, 0), (), ())
 
     # Read rectangle = union of those cells, clamped to the level bounds.
     # Anchoring the read rect to the tile grid means each tile's crop
@@ -200,10 +198,7 @@ def plan_viewport(
     ry1 = min(lh, (ty1 + 1) * t)
     if rx1 <= rx or ry1 <= ry:
         # Viewport entirely off-slide: nothing to read or draw.
-        return ReadPlan(level, ds, (0, 0), (0, 0), (0, 0), (), ())
-
-    loc = (anchor_l0(rx, ds), anchor_l0(ry, ds))
-    size = (rx1 - rx, ry1 - ry)
+        return ReadPlan(level, ds, (0, 0), (), ())
 
     tiles: list[Tile] = []
     for ty in range(ty0, ty1 + 1):
@@ -228,6 +223,6 @@ def plan_viewport(
             )
 
     return ReadPlan(
-        level, ds, loc, size, (rx, ry), tuple(tiles),
+        level, ds, (rx, ry), tuple(tiles),
         _chunk_tiles(meta, level, ds, vp, tiles, t),
     )

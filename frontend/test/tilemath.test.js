@@ -109,8 +109,12 @@ test('viewportL0Bbox inverts the transform', () => {
 });
 
 test('viewport/transform wire form round-trip', () => {
-  const vp = { cx: 1, cy: 2, zoom: 3, canvas_w: 4, canvas_h: 5 };
-  const t = math.viewportToTransform(vp);
+  // The wire form carries no canvas height: the `canvas_h` trait is the
+  // source of truth, so the transform takes it as a parameter and the
+  // round-trip sends it back.
+  const vp = { cx: 1, cy: 2, zoom: 3, canvas_w: 4 };
+  const t = math.viewportToTransform(vp, 5);
+  assert.equal(t.canvasH, 5);
   assert.deepEqual(math.transformToViewport(t), vp);
 });
 

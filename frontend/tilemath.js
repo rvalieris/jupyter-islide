@@ -2,9 +2,11 @@
  * Pure viewport/tile math shared by the islide view and its tests.
  *
  * Contract (see docs/DESIGN.md §4, §7):
- *   viewport wire form: { cx, cy, zoom, canvas_w, canvas_h }
+ *   viewport wire form: { cx, cy, zoom, canvas_w }
  *       cx, cy  : slide (level-0) coordinates of the canvas center
  *       zoom    : screen px per level-0 pixel (1.0 == 1:1)
+ *       (the canvas height never crosses the wire: the `canvas_h` model
+ *        trait is the source of truth on both sides)
  *   transform (JS-local): { cx, cy, zoom, canvasW, canvasH }
  *   meta:      { dimensions: [w, h], level_count, level_downsamples: [...],
  *                level_dimensions: [...], mpp, vendor }
@@ -25,23 +27,29 @@ export function clampZoom(zoom, minZoom, maxZoom) {
   return Math.min(Math.max(zoom, minZoom), maxZoom);
 }
 
-export function viewportToTransform(vp) {
+/**
+ * Wire viewport -> local transform. The canvas height comes from the
+ * `canvas_h` model trait (the wire form carries no height); the canvas
+ * width is the wire's `canvas_w` (JS-owned: the view's actual width).
+ */
+export function viewportToTransform(vp, canvasH) {
   return {
     cx: vp.cx,
     cy: vp.cy,
     zoom: vp.zoom,
     canvasW: vp.canvas_w,
-    canvasH: vp.canvas_h,
+    canvasH: canvasH,
   };
 }
 
+/** Local transform -> wire viewport (the height is not sent back: the
+ * `canvas_h` trait already holds it on the Python side). */
 export function transformToViewport(t) {
   return {
     cx: t.cx,
     cy: t.cy,
     zoom: t.zoom,
     canvas_w: t.canvasW,
-    canvas_h: t.canvasH,
   };
 }
 

@@ -117,12 +117,14 @@ def _meta_dict(meta: SlideMeta) -> dict:
 
 
 def _vp_dict(vp: Viewport) -> dict:
+    # The viewport wire form: the canvas height is NOT part of it — the
+    # `canvas_h` synced trait is the source of truth on both sides
+    # (`canvas_w` is: it is JS-owned, the width the view actually has).
     return {
         "cx": vp.cx,
         "cy": vp.cy,
         "zoom": vp.zoom,
         "canvas_w": vp.canvas_w,
-        "canvas_h": vp.canvas_h,
     }
 
 
@@ -170,9 +172,10 @@ class SlideViewer(widgets.DOMWidget):
       accumulates the render's pushes into the full viewport.
     * ``canvas_h`` (synced int, CSS px) is the user-settable on-screen
       viewport height: set it at construction or at runtime
-      (``v.canvas_h = 900``). The JS view applies it to the canvas; its
-      ResizeObserver then syncs the resized viewport back, which re-plans
-      the tiles. Headless, the viewport is re-based directly.
+      (``v.canvas_h = 900``). It is the source of truth for canvas
+      height on both sides — the JS view applies it to the canvas, and
+      the Python observer re-plans the current viewport at the new
+      height (it is not part of the ``viewport`` wire form).
     * ``image_cache_max`` (synced int) is the single decoded-tile cache
       cap: the JS view's decoded image cache *and* the kernel's
       :class:`TileCache` (both LRU, same ``level:tx:ty`` keys, counted
@@ -251,12 +254,14 @@ class SlideViewer(widgets.DOMWidget):
     # "id", ...} object or None (no command yet; docs/DESIGN.md §6.5). The
     # Python observer applies it to `annotations` (pure apply_edit) and
     # pushes the updated set; an unknown/stale id leaves the set untouched
-    # (a status note instead). Last-event slot: re-attach replays it, and
-    # every op is idempotent over the pushed set, so the replay is a
-    # harmless no-op.
+    # (a status note instead). Last-event slot: the trait carries the
+    # last issued command (a re-attached view applies it to its own
+    # state); the observer is not re-triggered on re-attach.
     annotation_edit = Dict(default_value=None, allow_none=True).tag(sync=True)
     # The attach re-render counter (JS -> Py): the JS view bumps it once
-    # per attach (last-event counter, like last_polygon / annotation_edit).
+    # per attach (last-event counter, like last_polygon / annotation_edit
+    # — the trait carries the last issued command; a re-attached view
+    # simply applies it to its own state).
     # A re-attached view seeds its image cache from the traits' current
     # value — the *last* chunk of the last render (per-chunk pushes,
     # docs/DESIGN.md §6.6.2) — and its initial fit-echo can be a no-op on
@@ -434,19 +439,21 @@ class SlideViewer(widgets.DOMWidget):
             )
         return Viewport(
             vp["cx"], vp["cy"], vp["zoom"],
-            canvas_w=vp["canvas_w"], canvas_h=vp["canvas_h"],
+            canvas_w=vp["canvas_w"], canvas_h=int(self.canvas_h),
         )
 
     def _on_canvas_h_change(self, change: dict) -> None:
-        h = int(self.canvas_h)
+        """Canvas height changed (user-settable synced trait): keep the
+        min-zoom clamp in step, and re-plan the current viewport at the
+        new canvas size — the height is not part of the ``viewport`` wire
+        form (planning reads it from this trait), so a plain render of
+        the unchanged viewport is what picks it up, headless or with a
+        JS view attached (the view's ResizeObserver resizes the canvas;
+        its debounced send is deduped — same wire form)."""
         if self._meta is not None:
-            self._min_zoom = fit_zoom(self._meta, self._canvas_w, h) / 4.0
-        if self.viewport is not None and self.viewport.get("canvas_h") != h:
-            # Re-base the shared viewport onto the new height. With a JS
-            # view attached, its ResizeObserver sends back the same size
-            # (deduped in _sendViewport); headless, this is what triggers
-            # the background re-render of the resized viewport.
-            self.viewport = dict(self.viewport, canvas_h=h)
+            self._min_zoom = fit_zoom(self._meta, self._canvas_w, int(self.canvas_h)) / 4.0
+        if self.viewport is not None:
+            self._schedule_render()
 
     def _on_image_cache_max_change(self, change: dict) -> None:
         """Runtime cap change: re-limit the kernel cache (the JS view
@@ -789,8 +796,9 @@ class SlideViewer(widgets.DOMWidget):
         feature (a Python-side ``set_annotations()`` replace can race a JS
         click) leaves the document untouched; the status reports the
         ignored edit either way. The ``annotation_edit`` trait itself is
-        the last-event slot and is not cleared: re-attach replays the
-        command, which is idempotent over the pushed set.
+        the last-event slot and is not cleared: it carries the last
+        issued command (a re-attached view applies it to its own state;
+        the observer does not re-apply it).
         """
         cmd = change["new"]
         if cmd is None:

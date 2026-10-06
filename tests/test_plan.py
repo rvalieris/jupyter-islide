@@ -25,6 +25,22 @@ def vp(cx, cy, zoom, w=400, h=200) -> Viewport:
     return Viewport(cx=cx, cy=cy, zoom=zoom, canvas_w=w, canvas_h=h)
 
 
+def _read_size(plan) -> tuple[int, int]:
+    """The union read rect's size in level px (extent of the tile crops,
+    which are relative to ``plan.read_origin``)."""
+    return (
+        max(t.crop[2] for t in plan.tiles),
+        max(t.crop[3] for t in plan.tiles),
+    )
+
+
+def _read_extent(plan) -> tuple[tuple[int, int], tuple[int, int]]:
+    """The union read rect as absolute level-px corners (top-left, bottom-right)."""
+    rx, ry = plan.read_origin
+    rw, rh = _read_size(plan)
+    return (rx, ry), (rx + rw, ry + rh)
+
+
 class TestSelectLevel:
     def test_zoom_at_or_above_full_res(self):
         assert select_level((1.0, 2.0, 4.0), 4.0) == 0
@@ -64,9 +80,9 @@ class TestPlan:
         plan = plan_viewport(META, vp(512, 256, 1.0), tile_size=256)
         assert plan.level == 0
         assert plan.read_origin == (256, 0)
-        assert plan.loc == (256, 0)  # ds == 1: level-0 anchor is exact
-        assert plan.size == (512, 512)
         assert plan.tiles
+        # the tiles' crops cover the read rect: 256..768 x 0..512 (level px)
+        assert _read_extent(plan) == ((256, 0), (768, 512))
 
     @pytest.mark.parametrize("zoom", [4.0, 1.0, 0.5, 0.25, 0.05])
     def test_covers_canvas(self, zoom):
@@ -88,11 +104,12 @@ class TestPlan:
     def test_off_slide_no_tiles(self):
         plan = plan_viewport(META, vp(5000, 256, 1.0), tile_size=256)
         assert plan.tiles == ()
-        assert plan.size == (0, 0)
+        assert plan.chunks == ()
+        assert plan.read_origin == (0, 0)
 
     def test_corner_clamped(self):
         plan = plan_viewport(META, vp(0, 0, 1.0), tile_size=256)
-        assert plan.loc == (0, 0)
+        assert plan.read_origin == (0, 0)
         assert plan.tiles
         # nothing is drawn left of the canvas edge (off-slide)
         assert all(t.screen[0] >= -1e-9 for t in plan.tiles)
@@ -113,15 +130,18 @@ class TestPlan:
         plan = plan_viewport(META, vp(512, 256, 0.25), tile_size=256)
         assert plan.level == 2
         lw, lh = META.level_dimensions[2]
-        assert plan.size[0] <= lw and plan.size[1] <= lh
-        assert plan.loc[0] >= 0 and plan.loc[1] >= 0
+        rx, ry = plan.read_origin
+        assert rx >= 0 and ry >= 0
+        _, (rx1, ry1) = _read_extent(plan)
+        assert rx1 <= lw and ry1 <= lh
 
     def test_crops_inside_read(self):
         plan = plan_viewport(META, vp(512, 256, 0.5), tile_size=256)
+        rw, rh = _read_size(plan)
         for t in plan.tiles:
             x0, y0, x1, y1 = t.crop
-            assert 0 <= x0 < x1 <= plan.size[0]
-            assert 0 <= y0 < y1 <= plan.size[1]
+            assert 0 <= x0 < x1 <= rw
+            assert 0 <= y0 < y1 <= rh
 
 
 def make_big_meta() -> SlideMeta:
@@ -152,10 +172,11 @@ class TestChunking:
         assert c.loc == (1024, 1024)  # ds == 1: the anchor is exact
         # the chunk read rect contains the union read rect (one covering
         # read per block; a single-block plan reads its whole block)
+        rw, rh = _read_size(plan)
         assert c.read_origin[0] <= plan.read_origin[0]
         assert c.read_origin[1] <= plan.read_origin[1]
-        assert c.read_origin[0] + c.size[0] >= plan.read_origin[0] + plan.size[0]
-        assert c.read_origin[1] + c.size[1] >= plan.read_origin[1] + plan.size[1]
+        assert c.read_origin[0] + c.size[0] >= plan.read_origin[0] + rw
+        assert c.read_origin[1] + c.size[1] >= plan.read_origin[1] + rh
 
     def test_chunks_partition_the_tile_set(self):
         plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)

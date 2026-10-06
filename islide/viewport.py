@@ -15,10 +15,6 @@ class SlideMeta:
     mpp: float | None = None  # microns per level-0 pixel (mpp-x)
     vendor: str | None = None
 
-    @property
-    def dims(self) -> tuple[int, int]:
-        return self.dimensions
-
 
 @dataclass(frozen=True)
 class Viewport:

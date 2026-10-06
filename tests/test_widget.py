@@ -128,9 +128,11 @@ def test_meta_trait_shape(viewer):
 def test_headless_default_viewport_is_fit(viewer):
     vp = viewer.viewport
     assert vp is not None
-    assert set(vp) == {"cx", "cy", "zoom", "canvas_w", "canvas_h"}
+    # The wire form carries no canvas height (the `canvas_h` trait is the
+    # source of truth on both sides).
+    assert set(vp) == {"cx", "cy", "zoom", "canvas_w"}
     assert vp["cx"] == 46000 / 2 and vp["cy"] == 32914 / 2
-    assert vp["canvas_w"] == 960 and vp["canvas_h"] == 540
+    assert vp["canvas_w"] == 960 and viewer.canvas_h == 540
     expected_fit = min(960 / 46000, 540 / 32914)
     assert vp["zoom"] == pytest.approx(expected_fit)
 
@@ -140,16 +142,18 @@ def test_constructor_canvas_h_sets_trait_and_fit_viewport(slide_path):
     try:
         assert v.canvas_h == 800
         vp = v.viewport
-        assert vp["canvas_w"] == 960 and vp["canvas_h"] == 800
+        assert vp["canvas_w"] == 960
         assert vp["zoom"] == pytest.approx(min(960 / 46000, 800 / 32914))
     finally:
         v.close()
 
 
-def test_runtime_canvas_h_rebases_viewport_and_replans(viewer):
-    """Headless: changing canvas_h re-bases the shared viewport onto the
-    taller canvas and the background re-render picks it up (a new tiles
-    dict is pushed, even if the tile set happens to be identical)."""
+def test_runtime_canvas_h_replans_viewport(viewer):
+    """Headless: changing canvas_h re-plans the current viewport at the
+    taller canvas (the height is not part of the viewport wire form —
+    planning reads it from the trait — so a background re-render of the
+    unchanged viewport picks it up; a new tiles dict is pushed, even if
+    the tile set happens to be identical)."""
     from traitlets import TraitError
 
     with pytest.raises(TraitError):
@@ -159,7 +163,6 @@ def test_runtime_canvas_h_rebases_viewport_and_replans(viewer):
     assert viewer.viewport_bbox()[3] - viewer.viewport_bbox()[1] == pytest.approx(540 / 2)
     tiles_before = viewer.tiles
     viewer.canvas_h = 800
-    assert viewer.viewport["canvas_h"] == 800
     # l0 view height follows the canvas: 540/2 -> 800/2 at zoom 2.0
     assert viewer.viewport_bbox()[3] - viewer.viewport_bbox()[1] == pytest.approx(800 / 2)
     deadline = time.monotonic() + 10
