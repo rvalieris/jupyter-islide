@@ -320,8 +320,9 @@ Between round-trips the view keeps a **local transform**
 (`{cx, cy, zoom, canvasW, canvasH}`) and reprojects the *same* tile
 geometry (`tile_geo`, absolute level-pixel crops) under it — pan/zoom is
 instant, then the debounced sync triggers the next Python tile pass. The
-view caches decoded tile images (insertion-order LRU, `image_cache_max`
-entries, default 1000) so back-pans are canvas-only.
+view caches decoded tile images (draw-order LRU — drawn tiles are touched
+on draw, `image_cache_max` entries, default 1000) so back-pans are
+canvas-only and eviction only ever takes off-screen tiles.
 
 The annotation updates are the same shape of one-way updates
 (`last_polygon`, §6.4; `annotation_edit`, §6.5), so the same round-trip
@@ -426,9 +427,10 @@ wholesale: the old level vanishes and the new one pops in at 100 % the
 moment the push lands. The cross-fade (OSD's `blendTime` idea) instead:
 
 - **Accumulated tile map.** The view already merges `tiles` into
-  `this._images` (insertion-order LRU, `image_cache_max` entries,
-  never evicts a
-  still-visible key in practice). `tile_geo` accumulates the same way:
+  `this._images` (draw-order LRU, `image_cache_max` entries: drawn tiles
+  are re-queued at the MRU end each frame, so
+  eviction only ever takes off-screen tiles — a cap below the visible tile
+  count is the exception). `tile_geo` accumulates the same way:
   a view-local `_tileGeo` map merged per push, evicted in lockstep with
   `_images` (same key, same budget). `drawScene` draws from `_tileGeo`,
   not the latest trait value — so the level a zoom is *leaving* stays on

@@ -109,6 +109,52 @@ test('drawScene skips off-canvas tiles and not-yet-loaded images', () => {
   assert.equal(ctx.calls.draw.length, 0);
 });
 
+test('drawScene reports the tiles it draws in `drawn` (the LRU touch set)', () => {
+  const t = { cx: 128, cy: 128, zoom: 1.0, canvasW: 256, canvasH: 256 };
+  const geo = {
+    '0:0:0': [0, 0, 0, 256, 256],
+    '0:1:0': [0, 256, 0, 256, 256],
+    '0:5:5': [0, 1280, 1280, 256, 256], // far off-canvas
+  };
+  const images = new Map([
+    ['0:0:0', { _ready: true }],
+    ['0:1:0', { _ready: false }], // not loaded: drawn nothing, reported nothing
+  ]);
+  const ctx = mockCtx();
+  const drawn = new Set();
+  const n = drawScene(ctx, {
+    transform: t, meta: META, tileGeo: geo, images, drawn,
+  });
+  assert.equal(n, 1);
+  assert.deepEqual([...drawn], ['0:0:0']);
+  // No `drawn` set: same contract as before (the parameter defaults to null).
+  ctx.calls.draw.length = 0;
+  assert.equal(drawScene(ctx, {
+    transform: t, meta: META, tileGeo: geo, images,
+  }), 1);
+});
+
+test('drawScene reports nothing for alpha-0 levels (cross-fade tail)', () => {
+  const t = { cx: 0, cy: 0, zoom: 0.5, canvasW: 512, canvasH: 512 };
+  // level-0 tile (the fading-out level) + level-1 tile (the new level),
+  // both on-canvas
+  const geo = {
+    '0:0:0': [0, 0, 0, 256, 256],
+    '1:0:0': [1, 0, 0, 256, 256],
+  };
+  const images = new Map(Object.keys(geo).map((k) => [k, { _ready: true }]));
+  const ctx = mockCtx();
+  const drawn = new Set();
+  // fade at its end: the outgoing level is at alpha 0 (skipped), the new
+  // level at 1 — only the drawn level may be touched
+  const n = drawScene(ctx, {
+    transform: t, meta: META, tileGeo: geo, images,
+    levelAlphas: { 0: 0, 1: 1 }, drawn,
+  });
+  assert.equal(n, 1);
+  assert.deepEqual([...drawn], ['1:0:0']);
+});
+
 test('drawScene reprojections under a local transform (smooth pan)', () => {
   // A tile fetched for one viewport must still land at the right screen
   // place after a pure client-side pan/zoom (no Python round-trip).

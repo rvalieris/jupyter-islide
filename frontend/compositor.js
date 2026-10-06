@@ -89,6 +89,9 @@ function paintBackground(ctx, w, h) {
  *   fading-out level disappears at the fade's end). When omitted (the
  *   single-level contract) every visible ready tile is drawn at full opacity in
  *   `tileGeo` insertion order.
+ * @param {Set<string>|null} opts.drawn  when given, the keys of the tiles
+ *   actually drawn are added to it (the view feeds this to its image-cache
+ *   LRU touch — see SlideView._touchImage).
  * @returns {number} number of tiles drawn
  */
 /**
@@ -102,7 +105,10 @@ function paintBackground(ctx, w, h) {
  */
 const SEAM_MARGIN = 0.5;
 
-export function drawScene(ctx, { transform, meta, tileGeo, images, levelAlphas = null }) {
+export function drawScene(
+  ctx,
+  { transform, meta, tileGeo, images, levelAlphas = null, drawn = null },
+) {
   paintBackground(ctx, transform.canvasW, transform.canvasH);
 
   const ds = meta.level_downsamples;
@@ -117,6 +123,7 @@ export function drawScene(ctx, { transform, meta, tileGeo, images, levelAlphas =
       tile.w + 2 * SEAM_MARGIN,
       tile.h + 2 * SEAM_MARGIN,
     );
+    if (drawn) drawn.add(tile.key);
     return true;
   };
 

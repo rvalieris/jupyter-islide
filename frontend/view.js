@@ -412,8 +412,25 @@ export class SlideView extends DOMWidgetView {
     return Number.isInteger(cap) && cap > 0 ? cap : DEFAULT_CACHED_IMAGES;
   }
 
-  /** LRU-evict down to the cap; geometry evicts in lockstep with images
-   * (a stale geo entry without its image would draw a missing tile).
+  /** LRU touch: move a just-drawn tile to the MRU end of `_images`.
+   * Map iteration order is insertion order, and `_evictImages` evicts
+   * from the head, so after each frame the head is the least-recently-
+   * drawn tile. Map.set on an existing key updates in place without
+   * re-ordering, so the touch is a delete + re-set.
+   */
+  _touchImage(key) {
+    const img = this._images.get(key);
+    if (img) {
+      this._images.delete(key);
+      this._images.set(key, img);
+    }
+  }
+
+  /** LRU-evict down to the cap: the map head is the least-recently-drawn
+   * tile (drawn tiles are re-set at the tail each frame, _touchImage), so
+   * eviction only ever takes tiles off-screen. Geometry evicts in lockstep
+   * with images (a stale geo entry without its image would draw a missing
+   * tile).
    */
   _evictImages() {
     while (this._images.size > this._imageCacheMax()) {
@@ -1166,13 +1183,18 @@ export class SlideView extends DOMWidgetView {
     // rAF loop below stops — the fade never runs at rest.
     const now = Date.now();
     const levelAlphas = this._blend ? blend.levelAlphas(this._blend, now) : null;
+    // Report the tiles actually drawn so the image cache can touch them
+    // (LRU recency = last drawn; see _touchImage).
+    const drawn = new Set();
     drawScene(ctx, {
       transform: this._transform,
       meta: this.model.get('meta'),
       tileGeo: this._tileGeo,
       images: this._images,
       levelAlphas,
+      drawn,
     });
+    for (const key of drawn) this._touchImage(key);
     // Overlay (heatmap): over the tiles, under the annotation canvas.
     const alpha = Number(this.model.get('overlay_alpha'));
     drawOverlay(ctx, {
