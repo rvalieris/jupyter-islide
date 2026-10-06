@@ -99,7 +99,6 @@ def viewer():
     fake = FakeSlide(BIG)
     v = SlideViewer(slide=fake)
     try:
-        v.wait()
         yield v
     finally:
         v.close()

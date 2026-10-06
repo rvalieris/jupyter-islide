@@ -43,7 +43,6 @@ def _as_json(value):
 @pytest.fixture()
 def viewer(slide_path):
     v = SlideViewer(slide_path)
-    v.wait()
     yield v
     v.close()
 
@@ -177,7 +176,6 @@ def test_jpeg_quality_validation(viewer, slide_path):
 def test_jpeg_quality_changes_tile_payload_only(viewer, slide_path):
     low = SlideViewer(slide_path, jpeg_quality=40)
     try:
-        low.wait()
         plan_def = viewer._render_once()
         plan_low = low._render_once()
     finally:

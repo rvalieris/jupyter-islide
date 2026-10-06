@@ -108,7 +108,6 @@ def test_slide_viewer_with_fake_slide():
     fake = _fake_slide()
     v = SlideViewer(slide=fake)
     try:
-        v.wait()
         assert v.slide_open
         assert v.meta["dimensions"] == [512, 256]
         assert v.meta["mpp"] == 0.5

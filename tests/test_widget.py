@@ -1,8 +1,9 @@
 """`SlideViewer` (custom DOMWidget) tests — headless (no JS view).
 
-Covers: background open + wait(), synced-state contract (tiles/tile_geo),
-programmatic viewport API, cache invariance across panning, error path,
-close(), and the cross-language trait contract with frontend/defaults.js.
+Covers: synchronous open in the constructor, synced-state contract
+(tiles/tile_geo), programmatic viewport API, cache invariance across
+panning, error path, close(), and the cross-language trait contract with
+frontend/defaults.js.
 """
 from __future__ import annotations
 
@@ -83,8 +84,7 @@ def test_synced_data_traits_match_frontend_defaults():
 
 
 # ------------------------------------------------------------------- open API
-def test_background_open_and_wait(viewer):
-    viewer.wait()
+def test_open_in_constructor(viewer):
     assert viewer.slide_open
     assert viewer.backend is not None
     # after the initial render the status line carries the render info
@@ -100,7 +100,6 @@ def test_slide_kwarg_accepts_opened_openslide_object(slide_path):
     os_slide = openslide.open_slide(slide_path)
     v = SlideViewer(slide=os_slide)
     try:
-        v.wait()
         assert v.slide_open
         assert v.path == slide_path  # best-effort path lifted from the object
         assert v.meta["dimensions"] == [46000, 32914]
@@ -114,7 +113,6 @@ def test_slide_kwarg_accepts_opened_openslide_object(slide_path):
 
 
 def test_meta_trait_shape(viewer):
-    viewer.wait()
     meta = viewer.meta
     assert set(meta) == {
         "dimensions", "level_count", "level_downsamples",
@@ -128,7 +126,6 @@ def test_meta_trait_shape(viewer):
 
 
 def test_headless_default_viewport_is_fit(viewer):
-    viewer.wait()
     vp = viewer.viewport
     assert vp is not None
     assert set(vp) == {"cx", "cy", "zoom", "canvas_w", "canvas_h"}
@@ -141,7 +138,6 @@ def test_headless_default_viewport_is_fit(viewer):
 def test_constructor_canvas_h_sets_trait_and_fit_viewport(slide_path):
     v = SlideViewer(slide_path, canvas_h=800)
     try:
-        v.wait()
         assert v.canvas_h == 800
         vp = v.viewport
         assert vp["canvas_w"] == 960 and vp["canvas_h"] == 800
@@ -156,7 +152,6 @@ def test_runtime_canvas_h_rebases_viewport_and_replans(viewer):
     dict is pushed, even if the tile set happens to be identical)."""
     from traitlets import TraitError
 
-    viewer.wait()
     with pytest.raises(TraitError):
         viewer.canvas_h = 0  # rejected, keeps the old value
     assert viewer.canvas_h == 540
@@ -174,7 +169,6 @@ def test_runtime_canvas_h_rebases_viewport_and_replans(viewer):
 
 
 def test_minimap_is_jpeg_data_url(viewer):
-    viewer.wait()
     assert viewer.minimap_img.startswith("data:image/jpeg;base64,")
 
 
@@ -219,7 +213,6 @@ def test_tiles_and_tile_geo_contract(viewer):
     JPEG. (The per-chunk push mechanics — one push per chunk, the union
     of a render's pushes the full set — are covered over the synchronous
     widget in test_widget_chunks.py.)"""
-    viewer.wait()
     _wait_bg(viewer)
     plan = plan_viewport(viewer._meta, viewer._vp_current, viewer.tile_size)
     tiles, geo = viewer.tiles, viewer.tile_geo
@@ -253,7 +246,6 @@ def test_revisit_after_pan_serves_identical_tiles(viewer):
     panned viewport must produce byte-identical tile payloads (compare
     the full render push unions — the traits themselves hold only the
     last chunk)."""
-    viewer.wait()
     _wait_bg(viewer)
     first = _capture_render(viewer, lambda: viewer.set_zoom(2.0))
     # pan away (unobserved intermediate renders)
@@ -270,7 +262,6 @@ def test_revisit_after_pan_serves_identical_tiles(viewer):
 
 # ------------------------------------------------------------ programmatic
 def test_set_zoom_and_center_on(viewer):
-    viewer.wait()
     vp = viewer.set_zoom(2.0)
     assert vp.zoom == pytest.approx(2.0)
     assert viewer.viewport["zoom"] == pytest.approx(2.0)
@@ -280,14 +271,12 @@ def test_set_zoom_and_center_on(viewer):
 
 
 def test_zoom_clamps(viewer):
-    viewer.wait()
     fit = min(960 / 46000, 540 / 32914)
     assert viewer.set_zoom(1e9).zoom == pytest.approx(16.0)
     assert viewer.set_zoom(1e-9).zoom == pytest.approx(fit / 4.0)
 
 
 def test_viewport_bbox_and_read_crop(viewer):
-    viewer.wait()
     viewer.set_zoom(1.0)
     viewer.center_on(23000, 16457)
     x0, y0, x1, y1 = viewer.viewport_bbox()
@@ -298,7 +287,6 @@ def test_viewport_bbox_and_read_crop(viewer):
 
 
 def test_render_returns_readplan(viewer):
-    viewer.wait()
     _wait_bg(viewer)
     plan = viewer.render()
     assert plan is not None
@@ -311,7 +299,6 @@ def test_render_returns_readplan(viewer):
 
 
 def test_js_originated_viewport_triggers_background_render(viewer):
-    viewer.wait()
     before = viewer.status
     # Simulate the JS view: set the trait directly (what a comm update does).
     viewer.viewport = {
@@ -333,7 +320,6 @@ def test_resync_repairs_attach_seed(viewer):
     one push that is a value-equal no-op is exactly the chunk the seed
     holds). Needed because the view's fit-echo alone can be a no-op on
     the Python side (a value-equal viewport set fires no observer)."""
-    viewer.wait()
     _wait_bg(viewer)
     plan = plan_viewport(viewer._meta, viewer._vp_current, viewer.tile_size)
     # attach: seed from the last-event traits (what the JS view does)
@@ -374,18 +360,14 @@ def test_resync_repairs_attach_seed(viewer):
 
 
 # ------------------------------------------------------------------- errors
-def test_bad_path_reports_error_and_wait_raises():
-    v = SlideViewer("/nonexistent/slide.svs")
-    with pytest.raises(RuntimeError, match="failed to open slide"):
-        v.wait()
-    assert v.slide_open is False
-    assert v.status.startswith("error opening slide")
-    v.close()
-    v.close()  # idempotent
+def test_bad_path_raises_in_constructor():
+    # Opening is synchronous: a path that cannot be opened raises from the
+    # constructor (there is no half-open widget to inspect afterwards).
+    with pytest.raises(Exception):
+        SlideViewer("/nonexistent/slide.svs")
 
 
 def test_close_is_idempotent(viewer):
-    viewer.wait()
     viewer.close()
     viewer.close()
 

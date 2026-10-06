@@ -184,8 +184,9 @@ and slice it into tiles. Consequences:
   validity rests on the grid-anchored read rect (§5, step 1): the cached
   image for a cell is always exactly `cell ∩ slide bounds`, at every zoom
   and viewport.
-- **Slide handle**: `OpenSlide` objects are opened lazily on a background
-  thread (opening large SVS files can take seconds) and kept open while
+- **Slide handle**: `OpenSlide` objects are opened synchronously in the
+  widget constructor (opening large SVS files can take seconds; the
+  constructor blocks until open, and raises on failure) and kept open while
   the viewer is live; closed on widget disposal (`on_widget_disposed`) and
   by `close()`.
 - **Minimap image** and slide **metadata** computed once at open.
@@ -497,14 +498,11 @@ time — no heap):
   coalescing re-plans from the latest viewport. Comm cost: *less* than
   the old two-stage push — N chunk-sets instead of N+1 (the center chunk
   is no longer re-sent), and the same for single-chunk plans (one push
-  either way). **Display after `wait()`.** Displaying before the
-  background open completes puts the view on a widget whose state is
-  still streaming in: the attach `resync` bump lands before
-  `slide_open` (its triggered render is a no-op), and in JupyterLab the
-  output rendering can race the still-open comm (console
-  `widget model not found`, dead canvas on re-run). `wait()` makes
-  `comm_open` carry the complete state, so the view attaches to a
-  consistent snapshot.
+  either way). **Display after construction.** Slide opening is
+  synchronous in the constructor, so by the time `display(v)` runs the
+  widget's state is complete (open slide, fit viewport, initial tiles):
+  the first comm state carries the full snapshot, and the view attaches
+  to a consistent, already-open widget.
 
 #### 6.6.3 Out of scope
 
@@ -521,13 +519,13 @@ keying), the OpenSlide backend.
 ```python
 from islide import SlideViewer
 
-v = SlideViewer("sample.svs")   # opens in background
-# SlideViewer(path, canvas_w=960, canvas_h=540, tile_size=256,
-#             cache_max_mb=256, *, slide=None, jpeg_quality=85)
-v.wait()                       # block until open (raises on open failure)
-display(v)                     # display *after* wait(): the widget's first
-                               # comm state then carries the full state
-                               # (open slide, fit viewport, initial tiles)
+v = SlideViewer("sample.svs")   # opens the slide synchronously
+                               # (the constructor blocks until open,
+                               #  and raises on open failure)
+display(v)                     # display right after construction: the
+                               # widget's first comm state already carries
+                               # the full state (open slide, fit viewport,
+                               # initial tiles)
 
 # programmatic navigation (slide coords = level-0 px)
 v.center_on(120_000, 80_000)
@@ -576,7 +574,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 
 | Trait | Dir | Type | Notes |
 |---|---|---|---|
-| `slide_open` | Py→JS | bool | false until open; on open failure it stays false and `status` carries the error |
+| `slide_open` | Py→JS | bool | always `True` once the widget is constructed (open is synchronous in the constructor; a failed open raises before the widget exists) |
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w, canvas_h}` (level-0 center + zoom + canvas size) |
 | `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas and its ResizeObserver syncs the resized viewport back |
@@ -630,7 +628,7 @@ openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
 
 | Metric | Target |
 |---|---|
-| Time to first pixel (local file, after kernel import) | < 2 s on a typical SVS (open on bg thread; minimap first) |
+| Time to first pixel (local file, after kernel import) | < 2 s on a typical SVS (open is synchronous in the constructor; minimap first) |
 | Pan responsiveness (cached region) | ≤ 1 frame of perceived lag; tiles already on JS side |
 | Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
 | Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms); each remaining chunk is pushed as its own read lands, in the same render pass |

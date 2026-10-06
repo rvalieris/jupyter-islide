@@ -55,9 +55,8 @@ hood (pip invokes the same `hatchling` + `jupyter-builder` hook).
 ```python
 from islide import SlideViewer
 
-v = SlideViewer("data/CMU-1.tiff")     # opens in the background
-v.wait()                                 # block until ready
-display(v)                              # canvas view (needs the JS extension)
+v = SlideViewer("data/CMU-1.tiff")   # opens the slide (synchronous)
+display(v)                           # canvas view (needs the JS extension)
 
 v.center_on(23000, 16457)    # level-0 slide coordinates
 v.set_zoom(2.0)

@@ -5,8 +5,9 @@ see docs/DESIGN.md §6, §7). The JS ``SlideView`` owns a canvas compositor and
 mouse/keyboard input; Python owns the slide, plans/fetches/caches/encodes
 tiles and pushes them as data URLs plus level-space geometry. Viewport
 changes flow back through the ``viewport`` trait (debounced by the view).
-Slide opening happens on a background thread so the kernel stays
-responsive; call :meth:`SlideViewer.wait` to block until open (or error).
+Slide opening happens synchronously in the constructor: by the time
+``SlideViewer(...)`` returns, the slide is open (or the constructor raised),
+so the widget's first sync to the frontend already carries the full state.
 
 Pipeline: ``plan_viewport`` -> per-chunk ``fetch_chunk`` -> ``TileCache``
 -> ``jpeg_data_url``.
@@ -150,8 +151,11 @@ class SlideViewer(widgets.DOMWidget):
     already-opened slide object (``SlideViewer(slide=obj)``) — exactly one
     of the two.
 
-    * Slide opening runs on a background thread; ``slide_open`` flips to
-      ``True`` when ready (or ``status`` carries the error message).
+    * Slide opening is synchronous: by the time the constructor returns the
+      slide is open (``slide_open`` is ``True`` and the initial viewport and
+      tiles are set), or the constructor raised. Displaying the widget right
+      after construction is safe — its first sync to the frontend carries the
+      full state.
     * ``viewport`` (level-0 center + zoom + canvas size) is the shared
       state. The JS view updates it from mouse/wheel input (debounced);
       :meth:`set_zoom` / :meth:`center_on` update it programmatically.
@@ -275,7 +279,6 @@ class SlideViewer(widgets.DOMWidget):
         # Teardown state before anything that can raise, so __del__/close()
         # stay safe on a half-constructed widget.
         self._closed = False
-        self._open_thread: threading.Thread | None = None
         self.backend: OpenSlideBackend | None = None
         try:
             q = int(jpeg_quality)
@@ -295,44 +298,34 @@ class SlideViewer(widgets.DOMWidget):
         self._meta: SlideMeta | None = None
         self._min_zoom = 1e-9
         self._max_zoom = 16.0
-        self._open_error: BaseException | None = None
         self._render_lock = threading.Lock()
         self._rendering_bg = False
         self._render_dirty = False
         self._syncing_viewport = False
         self.status = "opening slide…"
-        self._open_thread = threading.Thread(
-            target=self._open, name="islide-open", daemon=True
-        )
-        self._open_thread.start()
+        # Open the slide synchronously: by the time the constructor returns
+        # the widget is fully open (or this raised). Observers are registered
+        # first so the initial viewport set / render below behave the same as
+        # any later programmatic update.
         self.observe(self._on_viewport_change, names="viewport")
         self.observe(self._on_canvas_h_change, names="canvas_h")
         self.observe(self._on_last_polygon_change, names="last_polygon")
         self.observe(self._on_annotation_edit_change, names="annotation_edit")
         self.observe(self._on_resync_change, names="resync")
+        self._open()
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:
-        try:
-            if self._initial_slide is not None:
-                backend = OpenSlideBackend.from_object(self._initial_slide)
-            else:
-                backend = OpenSlideBackend(self.path)
-        except Exception as e:  # noqa: BLE001 - report via `status`
-            self._open_error = e
-            self.status = f"error opening slide: {e}"
-            return
+        if self._initial_slide is not None:
+            backend = OpenSlideBackend.from_object(self._initial_slide)
+        else:
+            backend = OpenSlideBackend(self.path)
         meta = backend.meta
         self._meta = meta
         self._min_zoom = fit_zoom(meta, *self._default_canvas) / 4.0
         self.backend = backend
         self.meta = _meta_dict(meta)
         self.minimap_img = self._overview_data_url(backend, meta)
-        self.status = (
-            f"ready: {meta.dimensions[0]}×{meta.dimensions[1]}, "
-            f"{meta.level_count} levels"
-        )
-        self.slide_open = True
         if self.viewport is None:
             # Headless (no JS view attached): pick the fit viewport. A JS
             # view, once displayed, sends its own fit viewport (with the
@@ -346,6 +339,11 @@ class SlideViewer(widgets.DOMWidget):
                     *self._default_canvas,
                 )
             )
+        self.status = (
+            f"ready: {meta.dimensions[0]}×{meta.dimensions[1]}, "
+            f"{meta.level_count} levels"
+        )
+        self.slide_open = True
         self._render_once()
 
     def _overview_data_url(self, backend, meta: SlideMeta, height: int = 180) -> str:
@@ -353,20 +351,10 @@ class SlideViewer(widgets.DOMWidget):
         mw = max(1, round(height * w / h))
         return jpeg_data_url(backend.thumbnail((mw, height)))
 
-    def wait(self, timeout: float | None = None) -> None:
-        """Block until the slide is open (or raise if it failed to open)."""
-        self._open_thread.join(timeout)
-        if self._open_error is not None:
-            raise RuntimeError(f"failed to open slide: {self._open_error}")
-        if not self.slide_open:
-            raise TimeoutError("slide still opening")
-
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._open_thread is not None:
-            self._open_thread.join()  # let the open (or its failure) settle
         self.slide_open = False
         if self.backend is not None:
             self.backend.close()
@@ -524,8 +512,6 @@ class SlideViewer(widgets.DOMWidget):
 
     def render(self) -> ReadPlan:
         """Synchronous render of the current viewport (headless/programmatic)."""
-        if not self.slide_open:
-            self.wait()
         plan = self._render_once()
         assert plan is not None
         return plan
@@ -533,8 +519,6 @@ class SlideViewer(widgets.DOMWidget):
     # --------------------------------------------------------------- public API
     def set_zoom(self, zoom: float, cx: float | None = None, cy: float | None = None) -> Viewport:
         """Set zoom (clamped), optionally moving the view center."""
-        if not self.slide_open:
-            self.wait()
         z = min(max(float(zoom), self._min_zoom), self._max_zoom)
         vp = self._vp_current.with_zoom(z)
         if cx is not None and cy is not None:
@@ -544,24 +528,18 @@ class SlideViewer(widgets.DOMWidget):
 
     def center_on(self, cx: float, cy: float) -> Viewport:
         """Move the view center to slide (level-0) coordinates."""
-        if not self.slide_open:
-            self.wait()
         vp = self._vp_current.with_center(float(cx), float(cy))
         self._set_viewport_sync(vp)
         return vp
 
     def viewport_bbox(self) -> tuple[float, float, float, float]:
         """Current view in level-0 coordinates, clamped to the slide: (x0, y0, x1, y1)."""
-        if not self.slide_open:
-            self.wait()
         x0, y0, x1, y1 = self._vp_current.l0_bbox
         w, h = self._meta.dimensions  # type: ignore[union-attr]
         return (max(0.0, x0), max(0.0, y0), min(float(w), x1), min(float(h), y1))
 
     def read_crop(self, bbox: tuple[float, float, float, float], level: int = 0):
         """Read a level-0-bbox region as a PIL image (level 0 by default)."""
-        if not self.slide_open:
-            self.wait()
         x0, y0, x1, y1 = (int(v) for v in bbox)
         w, h = self._meta.dimensions  # type: ignore[union-attr]
         x0, y0 = max(0, x0), max(0, y0)
@@ -576,8 +554,7 @@ class SlideViewer(widgets.DOMWidget):
         """Import a GeoJSON annotation document (replaces the current set).
 
         ``source`` is a GeoJSON file path or an already-parsed document
-        (dict); its coordinates are level-0 slide px. The slide need not
-        be open.
+        (dict); its coordinates are level-0 slide px.
 
         Returns the canonical annotation document (a GeoJSON
         ``FeatureCollection`` in level-0 px of ``{id, geometry,
@@ -618,7 +595,6 @@ class SlideViewer(widgets.DOMWidget):
         ``None`` to keep the image's own alpha channel untouched.
         Replaces any previous overlay.
         """
-        self.wait()
         tkey = _validate_transparent_key(transparent)
         img = _load_overlay_image(source)
         _apply_transparency(img, tkey)

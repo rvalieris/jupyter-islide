@@ -1,7 +1,10 @@
 """Regression tests for the notebook re-run / display-timing scenarios:
-a view that attaches before the slide has finished opening, and re-running
-the construction cell (a new widget while the previous one may still be
-open). Both must keep serving tiles when the user zooms.
+a view that attaches and bumps ``resync`` right after construction, and
+re-running the construction cell (a new widget while the previous one may
+still be open). Both must keep serving tiles when the user zooms.
+
+Opening is synchronous in the constructor, so these exercise the attach
+(resync bump) + fit-echo + zoom path over an already-open widget.
 """
 from __future__ import annotations
 
@@ -38,12 +41,11 @@ def union_of(pushes):
     return union
 
 
-def test_attach_before_open_then_zoom():
-    """The view attaches (resync bump) before `slide_open` arrives; the
-    open's render then streams in, and a later zoom still pushes."""
+def test_attach_then_zoom():
+    """The view attaches (resync bump) after construction and the open's
+    render is already complete; a later zoom still pushes."""
     v = SlideViewer(slide=FakeSlide(BIG))
-    v.resync = v.resync + 1  # JS attach bump, before open completes
-    v.wait()
+    v.resync = v.resync + 1  # JS attach bump
     settle(v)
     v.viewport = dict(FIT)  # the view's fit echo (JS-originated)
     settle(v)
@@ -56,14 +58,12 @@ def test_rerun_cell_while_previous_widget_open():
     """Re-running the construction cell creates a second widget while the
     first (zombie) comm may still exist; the new widget must still zoom."""
     a = SlideViewer(slide=FakeSlide(BIG))
-    a.wait()
     a.resync = a.resync + 1
     settle(a)
     a.viewport = dict(FIT)
     settle(a)
 
     b = SlideViewer(slide=FakeSlide(BIG))
-    b.wait()
     b.resync = b.resync + 1
     settle(b)
 

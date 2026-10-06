@@ -50,7 +50,6 @@ DOC = {
 @pytest.fixture()
 def viewer(slide_path):
     v = SlideViewer(slide_path)
-    v.wait()
     yield v
     v.close()
 
@@ -124,8 +123,7 @@ def test_trait_assignment_is_coerced_through_the_normalizer(viewer):
     assert viewer.annotations["features"][0]["id"] == "a0"
 
 
-def test_set_annotations_does_not_wait_for_open(slide_path):
-    # import never needs the slide: no wait
+def test_set_annotations_works_without_a_view(slide_path):
     v = SlideViewer(slide_path)
     try:
         doc = v.set_annotations({"type": "Point", "coordinates": [7, 8]})

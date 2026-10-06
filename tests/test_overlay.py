@@ -68,7 +68,6 @@ def _decode_png(url: str) -> Image.Image:
 @pytest.fixture()
 def viewer(slide_path):
     v = SlideViewer(slide_path)
-    v.wait()
     yield v
     v.close()
 
