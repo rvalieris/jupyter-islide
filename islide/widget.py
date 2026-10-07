@@ -9,8 +9,8 @@ Slide opening happens synchronously in the constructor: by the time
 ``SlideViewer(...)`` returns, the slide is open (or the constructor raised),
 so the widget's first sync to the frontend already carries the full state.
 
-Pipeline: ``plan_viewport`` -> per-chunk ``fetch_chunk`` -> ``TileCache``
--> ``jpeg_data_url``.
+Pipeline: ``plan_viewport`` -> per-chunk ``fetch_chunk`` (``TileCache``
+lookup, one ``read_region`` per chunk, tiles encoded to data URLs).
 """
 from __future__ import annotations
 
@@ -536,7 +536,11 @@ class SlideViewer(widgets.DOMWidget):
         plan = plan_viewport(self._meta, vp, self.tile_size)
         for chunk in plan.chunks:
             self._push_chunk(
-                plan, chunk, fetch_chunk(self.backend, self.cache, chunk, plan)
+                plan,
+                chunk,
+                fetch_chunk(
+                    self.backend, self.cache, chunk, plan, self._jpeg_quality
+                ),
             )
         # Pipeline info only: the live zoom + µm/px belong to the JS
         # readout (which tracks the local transform); repeating them here
@@ -552,11 +556,11 @@ class SlideViewer(widgets.DOMWidget):
         self,
         plan: ReadPlan,
         chunk: Chunk,
-        chunk_tiles: dict[tuple, Any],
+        chunk_tiles: dict[tuple, str],
     ) -> None:
-        """Encode one chunk's tiles and push them as the ``tiles`` +
-        ``tile_geo`` last-event values (the JS view accumulates a
-        render's pushes into its image cache).
+        """Push one chunk's tiles (already-encoded data URLs from
+        ``fetch_chunk``) as the ``tiles`` + ``tile_geo`` last-event values
+        (the JS view accumulates a render's pushes into its image cache).
 
         Geometry is absolute level px (``plan.read_origin`` + the tile
         crops) — identical for a tile across a render's pushes, so the
@@ -569,7 +573,7 @@ class SlideViewer(widgets.DOMWidget):
             k = f"{t.key[0]}:{t.key[1]}:{t.key[2]}"
             x0, y0, x1, y1 = t.crop
             geo[k] = [t.key[0], rx + x0, ry + y0, x1 - x0, y1 - y0]
-            urls[k] = jpeg_data_url(chunk_tiles[t.key], self._jpeg_quality)
+            urls[k] = chunk_tiles[t.key]
         self.tiles = urls
         self.tile_geo = geo
 

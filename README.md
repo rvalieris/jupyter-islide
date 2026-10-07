@@ -71,9 +71,10 @@ Other constructor args: `canvas_w`, `tile_size`, `image_cache_max` and
 `jpeg_quality` (tile JPEG quality, 1–95, default 85 — the minimap and the
 `read_crop` path are unaffected). `image_cache_max` (default 1000 tiles;
 set at construction or at runtime via `v.image_cache_max = N`) is the
-single cap on the decoded-tile image caches: the view's decoded images
-*and* the kernel-side `TileCache` (both LRU over the same tile keys, in
-tile count) — a runtime decrease evicts on both sides immediately.
+single cap on the tile image caches on both sides: the view's decoded
+images *and* the kernel-side `TileCache` (encoded JPEG data URLs; both
+LRU over the same tile keys, in tile count) — a runtime decrease evicts
+on both sides immediately.
 
 **Annotations.** Import a GeoJSON document — a file path or
 a parsed dict: a `FeatureCollection` of `{id, geometry, properties}`

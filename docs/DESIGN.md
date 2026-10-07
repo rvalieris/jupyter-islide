@@ -100,7 +100,7 @@ notebook, drive it from Python.
 │    │    └─ read_region() ─► PIL.Image (RGBA)               │
 │    ├─ plan  (viewport ─► grid-anchored, center-first reads)│
 │    ├─ fetch (chunks ─► cache ─► one read per chunk, crop)  │
-│    ├─ TileCache   (LRU, count-budgeted, holds PIL images) │
+│    ├─ TileCache   (LRU, count-budgeted, encoded tiles)      │
 │    └─ state: SlideMeta, Viewport, annotation document      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -178,13 +178,13 @@ and slice it into tiles. Consequences:
 
 ### 5.2 Caching
 
-- **TileCache**: LRU keyed by `(level, tx, ty)`, valued by PIL image
-  (decoded, kept in `RGBA`). Budgeted by tile *count* (`image_cache_max`,
-  default 1000 — tiles are grid-anchored `tile_size` level-px cells, so
-  at most `tile_size²·4` bytes each, and the count bounds memory
-  closely). Same cap and key scheme as the JS view's decoded-image
-  cache: one user setting, both sides. Key validity rests on the
-  grid-anchored read rect (§5, step 1): the cached image for a cell is
+- **TileCache**: LRU keyed by `(level, tx, ty)`, valued by the encoded
+  tile data URL (JPEG — much smaller than the decoded `tile_size²·4`
+  cell it stands in for, and a hit is re-used without re-encoding).
+  Budgeted by tile *count* (`image_cache_max`, default 1000). Same cap
+  and key scheme as the JS view's decoded-image cache: one user
+  setting, both sides. Key validity rests on the
+  grid-anchored read rect (§5, step 1): the cached tile for a cell is
   always exactly `cell ∩ slide bounds`, at every zoom and viewport.
 - **Slide handle**: `OpenSlide` objects are opened synchronously in the
   widget constructor (opening large SVS files can take seconds; the
@@ -590,7 +590,7 @@ test — Python trait set == `frontend/defaults.js` keys):
 | `meta` | Py→JS | dict | `{dimensions, level_count, level_downsamples, level_dimensions, mpp, vendor}` |
 | `viewport` | JS⇄Py | dict | `{cx, cy, zoom, canvas_w}` (level-0 center + zoom + canvas width; the canvas height is not in the wire form — see `canvas_h`) |
 | `canvas_h` | Py→JS | int | on-screen viewport height (CSS px), user-settable at construction or runtime; the JS view applies it to the canvas, and the Python observer re-plans the current viewport at the new height (never crosses the wire) |
-| `image_cache_max` | Py→JS | int | the single decoded-tile cache cap (tile count, default 1000): the JS view's decoded image cache *and* the kernel `TileCache` (both LRU, same keys); user-settable at construction or runtime; a decrease re-limits both caches |
+| `image_cache_max` | Py→JS | int | the single tile cache cap (tile count, default 1000): the JS view's decoded image cache *and* the kernel `TileCache` (encoded data URLs; both LRU, same keys); user-settable at construction or runtime; a decrease re-limits both caches |
 | `tiles` | Py→JS | dict | `{"level:tx:ty": dataURL}` — last-event slot: a render pushes one chunk at a time (viewport-center-first, §6.6.2), so the trait holds the **last chunk** while the JS view accumulates the render's pushes (merges, never evicts per push) into the full viewport |
 | `tile_geo` | Py→JS | dict | `{"level:tx:ty": [level, ox, oy, cw, ch]}` — absolute level-pixel crop origin + size; the view reprojects this under its local transform |
 | `minimap_img` | Py→JS | dataURL | whole-slide overview (top-level JPEG), set once |
@@ -646,7 +646,7 @@ openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
 | Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
 | Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms); each remaining chunk is pushed as its own read lands, in the same render pass |
 | Tile transfer per full viewport | ≤ ~400 KB (≈ 20 tiles × 20 KB JPEG) |
-| Steady-state memory (cache on) | ≤ ~256 MB per side, worst case (`image_cache_max` 1000 tiles × ≤ 256 KB decoded) + slide handle overhead |
+| Steady-state memory (cache on) | ≤ ~256 MB in the JS view worst case (`image_cache_max` 1000 tiles × ≤ 256 KB decoded) + the kernel `TileCache` (same tile count, encoded JPEG data URLs — much less) + slide handle overhead |
 | Idle CPU | 0 (no polling; everything is trait-driven) |
 
 Explicit non-goals: no prefetching of off-screen tiles (the LRU cache

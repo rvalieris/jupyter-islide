@@ -1,4 +1,4 @@
-"""Count-budgeted LRU cache for decoded display tiles."""
+"""Count-budgeted LRU cache for encoded display tiles (JPEG data URLs)."""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -10,10 +10,12 @@ _DEFAULT_MAX_TILES = 1000
 class TileCache:
     """LRU cache keyed by ``(level, tx, ty)``.
 
-    Values are decoded images (PIL). The budget is a count of tiles:
-    each tile is at most one ``tile_size`` level-px cell (edges smaller),
-    so the count bounds memory closely, and it matches the JS view's
-    decoded-image cap (``image_cache_max``) one-for-one.
+    Values are the encoded tile data URLs (JPEG) — smaller than the
+    decoded images they stand in for, and re-used on a hit without
+    re-encoding. The budget is a count of tiles: each encoded tile is a
+    ``tile_size`` level-px cell (edges smaller), so the count bounds
+    memory closely, and it matches the JS view's decoded-image cap
+    (``image_cache_max``) one-for-one.
     """
 
     def __init__(self, max_tiles: int = _DEFAULT_MAX_TILES) -> None:

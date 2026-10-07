@@ -1,6 +1,10 @@
 """Integration tests against the real test slide (needs openslide +
 data/CMU-1.tiff, downloaded at test time when missing -- see conftest.py)."""
+import base64
+import io
+
 import pytest
+from PIL import Image
 
 try:
     import openslide  # noqa: F401
@@ -10,7 +14,6 @@ except ImportError:
 
 from islide.backend import OpenSlideBackend
 from islide.cache import TileCache
-from islide.encode import jpeg_data_url
 from islide.fetch import fetch_chunk
 from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import Viewport
@@ -22,6 +25,19 @@ SLIDE = str(SLIDE_PATH)
 pytestmark = [
     pytest.mark.skipif(not HAS_OPENSLLIDE, reason="openslide-python not installed"),
 ]
+
+
+def _decode_data_url(url: str) -> "Image.Image":
+    _, b64 = url.split(",", 1)
+    return Image.open(io.BytesIO(base64.b64decode(b64)))
+
+
+def _mae(a: "Image.Image", b: "Image.Image") -> float:
+    """Mean absolute per-channel error (0–255) between two same-size images."""
+    ta = a.convert("RGB").tobytes()
+    tb = b.convert("RGB").tobytes()
+    assert len(ta) == len(tb)
+    return sum(abs(x - y) for x, y in zip(ta, tb)) / len(ta)
 
 
 class CountingBackend:
@@ -62,10 +78,7 @@ def test_render_roundtrip(backend):
         tiles.update(fetch_chunk(cb, cache, chunk, plan))
     assert cb.reads == 1  # one big read for the whole viewport
     for t in plan.tiles:
-        img = tiles[t.key]
-        assert img.size == (t.crop[2] - t.crop[0], t.crop[3] - t.crop[1])
-        assert img.mode == "RGBA"
-        url = jpeg_data_url(img)
+        url = tiles[t.key]
         assert url.startswith("data:image/jpeg;base64,")
         assert len(url) > 1000
 
@@ -108,7 +121,13 @@ def test_tile_cache_is_viewport_invariant(backend):
     """A tile's image must depend only on (level, tx, ty) and the slide bounds,
     never on which viewport fetched it. (Previously the read rect's edges cut
     through cells, so a tile cached as a partial crop at one viewport's edge
-    was later served stretched as a full cell.)"""
+    was later served stretched as a full cell.)
+
+    The cache stores the *encoded* tile (JPEG data URL), so the content
+    check decodes it and compares against the slide's exact pixels with a
+    small tolerance (JPEG is lossy; a wrong region would differ by orders
+    of magnitude). The size check stays exact — decoding recovers the
+    crop's dimensions exactly."""
     T = 256
     cache = TileCache()
     ds0 = backend.meta.level_downsamples[0]
@@ -121,16 +140,15 @@ def test_tile_cache_is_viewport_invariant(backend):
             fetch_chunk(backend, cache, chunk, plan)
         for t in plan.tiles:
             _, tx, ty = t.key
-            img = cache.get(t.key)
+            img = _decode_data_url(cache.get(t.key))
             cw = min(tx * T + T, W) - tx * T
             ch = min(ty * T + T, H) - ty * T
             assert img.size == (cw, ch)
-            # content must be exactly the slide pixels for that cell
+            # content must be the slide pixels for that cell (lossy tolerance)
             truth = backend.read_region(
                 (anchor_l0(tx * T, ds0), anchor_l0(ty * T, ds0)), 0, (T, T)
             )
             lx0 = t.crop[0] + plan.read_origin[0] - tx * T
             ly0 = t.crop[1] + plan.read_origin[1] - ty * T
-            assert img.tobytes() == truth.crop(
-                (lx0, ly0, lx0 + img.width, ly0 + img.height)
-            ).tobytes()
+            crop = truth.crop((lx0, ly0, lx0 + cw, ly0 + ch))
+            assert _mae(img, crop) <= 4
