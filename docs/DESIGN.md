@@ -148,9 +148,10 @@ Per viewport change (coalesced to at most one in-flight pass):
    `tests/test_integration.py::test_tile_cache_is_viewport_invariant`).
 2. **Fetch.** Chunks of the grid (4×4-tile blocks, viewport-center first —
    §6.6.2), one `read_region(location, level=L, size=rect_L.size)` call
-   per uncached chunk (see §5.1), then crop the result into display tiles
-   in Python with PIL. The tile cache is checked per tile; only uncached
-   rectangles are read.
+   per chunk with any missing tile (see §5.1) — the read rect is the union
+   of that chunk's missing tiles' cells — then crop the result into display
+   tiles in Python with PIL. The tile cache is checked per tile; only
+   uncached cells are read.
 3. **Encode.** Each tile → JPEG (quality 85 default,
    `jpeg_quality=1..95` constructor argument) → base64 in the `tiles`
    trait: `{ "<L>:<tx>:<ty>": "data:image/jpeg;base64,…" }`.
@@ -171,10 +172,12 @@ Per viewport change (coalesced to at most one in-flight pass):
 
 `read_region` is an OpenSlide decode call; calling it per 256 px tile
 (≈ 50+ calls per screen at moderate zoom) is dominated by decode setup,
-not pixels. Instead, per chunk we read the *whole covering rectangle* in a
-single call (at the selected level the full-viewport plan is a single
-chunk on the order of the canvas size, e.g. 1280 × 720 ≈ 3.7 MB RGBA)
-and slice it into tiles. Consequences:
+not pixels. Instead, per chunk we read the *covering rectangle of the
+chunk's missing cells* in a single call and slice it into tiles: a cold
+chunk reads the union of its cells (≤ one 1024-px block — on the order of
+a canvas quadrant at the selected level), and a partially missed chunk
+(LRU eviction, level switch) reads only the cells it lost — a single
+evicted tile costs one 256-px read, not a block. Consequences:
 
 - a few decode calls per viewport instead of ~50;
 - the tile cache still makes re-visits of panned-to regions free;
@@ -493,19 +496,16 @@ implemented as a pre-sorted chunk list (the chunks are all known at plan
 time — no heap):
 
 - `ReadPlan` carries `chunks`: the viewport's grid cells grouped into
-  **grid-anchored blocks of 4×4 tiles** (1024 level px), each block's
-  read rect = the union of its cells clamped to the level bounds — the
-  exact §5 invariant, so the `(level, tx, ty)` cache key and the
+  **grid-anchored blocks of 4×4 tiles** (1024 level px); a chunk's read
+  rect = the union of its missing cells (each clamped to the level bounds)
+  — the exact §5 invariant, so the `(level, tx, ty)` cache key and the
   viewport-invariance regression test are untouched. Chunks ordered by
-  block-center distance to the viewport center (the center block first).
-  A plan whose viewport fits one block is a single chunk — the
-  whole-viewport plan byte-for-byte, including the common zoomed-out
-  case.
 - `fetch_chunk` (the public fetch layer; the render path, §6.6.2, calls
   it once per chunk, center-first) reads one `read_region` per chunk —
   a chunk is skipped when every tile in it is cached; otherwise one
-  `read_region` for the block, crop, cache — the §5.1 "one big read,
-  crop in Python" strategy, just smaller and ordered. ~4 chunks for a
+  `read_region` for the union of its missing cells, crop, cache — the
+  §5.1 "one big read, crop in Python" strategy, just smaller and ordered.
+  ~4 chunks for a
   1280×720 canvas; the extra decode setups are cheap against a single
   viewport-sized read.
 - **Per-chunk push** (this is what makes center-first visible):

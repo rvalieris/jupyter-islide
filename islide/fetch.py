@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .encode import jpeg_data_url
-from .plan import Chunk, ReadPlan, Tile
+from .plan import Chunk, ReadPlan, Tile, anchor_l0
 
 
 def fetch_chunk(
@@ -19,12 +19,13 @@ def fetch_chunk(
 
     Cache hits are served from the LRU cache as-is (the cache stores the
     *encoded* tiles, so a hit is re-used without re-encoding); all misses
-    are satisfied by *one* ``read_region`` call for the chunk's read rect
-    (``chunk.loc`` / ``chunk.size``), sliced into the chunk's tiles, encoded
-    at ``quality``, and cached. Tile crops are relative to ``plan.read_origin``
-    (the union read rect); the chunk read is sliced after converting them to
-    ``chunk.read_origin`` (the block top-left — a tile cell is always inside
-    its block, so the offsets are non-negative).
+    are satisfied by *one* ``read_region`` call for the union of the
+    missing tiles' cells — not the whole chunk block, so a partially
+    missed chunk decodes only what it is missing — sliced into the tiles,
+    encoded at ``quality``, and cached. Tile crops are relative to
+    ``plan.read_origin`` (the union read rect); the chunk read is sliced
+    after converting them to the union origin (every missing cell is
+    inside the union, so the offsets are non-negative).
     """
     result: dict[tuple, str] = {}
     missing: list[Tile] = []
@@ -36,13 +37,26 @@ def fetch_chunk(
             missing.append(tile)
 
     if missing:
-        big = backend.read_region(chunk.loc, plan.level, chunk.size)
         prx, pry = plan.read_origin
-        crx, cry = chunk.read_origin
+        # Union of the missing tiles' cells, absolute level px: each
+        # tile's crop re-based onto ``plan.read_origin`` is its
+        # grid-aligned cell clamped to the level extent, so the union is
+        # grid-aligned too, and ``anchor_l0`` anchors the read exactly at
+        # its top-left.
+        ux0 = min(prx + t.crop[0] for t in missing)
+        uy0 = min(pry + t.crop[1] for t in missing)
+        ux1 = max(prx + t.crop[2] for t in missing)
+        uy1 = max(pry + t.crop[3] for t in missing)
+        ds = plan.downsample
+        big = backend.read_region(
+            (anchor_l0(ux0, ds), anchor_l0(uy0, ds)),
+            plan.level,
+            (ux1 - ux0, uy1 - uy0),
+        )
         for tile in missing:
             x0, y0, x1, y1 = tile.crop
             img = big.crop(
-                (prx + x0 - crx, pry + y0 - cry, prx + x1 - crx, pry + y1 - cry)
+                (prx + x0 - ux0, pry + y0 - uy0, prx + x1 - ux0, pry + y1 - uy0)
             )
             url = jpeg_data_url(img, quality)
             cache.put(tile.key, url)

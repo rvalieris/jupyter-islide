@@ -15,10 +15,10 @@ from __future__ import annotations
 import time
 
 import pytest
-from PIL import Image
-
+from PIL import Image, ImageDraw
 from islide import SlideViewer
-from islide.plan import plan_viewport
+from islide.fetch import fetch_chunk
+from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import SlideMeta, Viewport
 
 
@@ -52,27 +52,49 @@ def expected_geo(plan) -> dict[str, list[int]]:
     }
 
 
+def missing_union(plan, tiles):
+    """The read that satisfies exactly ``tiles``: (level-0 location,
+    level-px size) of the grid-aligned union of their clamped cells,
+    absolute level px — what ``fetch_chunk`` asks ``read_region`` for."""
+    rx, ry = plan.read_origin
+    x0 = min(rx + t.crop[0] for t in tiles)
+    y0 = min(ry + t.crop[1] for t in tiles)
+    x1 = max(rx + t.crop[2] for t in tiles)
+    y1 = max(ry + t.crop[3] for t in tiles)
+    ds = plan.downsample
+    return (anchor_l0(x0, ds), anchor_l0(y0, ds)), (x1 - x0, y1 - y0)
+
+
 class FakeSlide:
     """Multi-level slide for a custom slide library (duck-typed openslide
     OO API). ``read_region(location, level, size)`` follows openslide's
     semantics: location in level-0 px, size in level px; out-of-bounds is
     filled (PIL's crop pads), as the vendor fills.
 
-    Each pyramid level is a solid-color image (content is irrelevant;
-    the shape/size contract is what is under test).
+    Each pyramid level is a deterministic row-stripe image (row ``y`` is
+    gray ``y % 256``): shape/size is what most tests check, but the stripe
+    pattern makes a misaligned crop encode differently, so the
+    byte-identity assertions catch a wrong region.
     """
 
     def __init__(self, meta: SlideMeta):
         self.level_count = meta.level_count
         self.level_downsamples = list(meta.level_downsamples)
         self.level_dimensions = list(meta.level_dimensions)
-        self.properties = {"openslide.vendor": "fake"}
         self._levels = [
-            Image.new("RGB", (w, h), (200, 60, 60))
-            for (w, h) in meta.level_dimensions
+            self._stripe(w, h) for (w, h) in meta.level_dimensions
         ]
+        self.properties = {"openslide.vendor": "fake"}
         self.read_calls: list[tuple] = []
         self.closed = False
+
+    @staticmethod
+    def _stripe(w: int, h: int) -> Image.Image:
+        img = Image.new("L", (w, h))
+        d = ImageDraw.Draw(img)
+        for y in range(h):
+            d.line([(0, y), (w, y)], fill=y % 256)
+        return img.convert("RGB")
 
     @property
     def dimensions(self):
@@ -152,11 +174,12 @@ def test_multi_chunk_plan_pushes_one_chunk_at_a_time(viewer):
     assert merged_geo == geo
     assert viewer.tile_geo == geo_pushes[-1]
 
-    # one read per chunk, center chunk first (each push follows its own
-    # read; nothing is read twice)
+    # one read per chunk — the union of the chunk's tiles' cells — center
+    # chunk first (each push follows its own read; nothing is read twice)
     assert len(fake_reads) == len(plan.chunks)
     for (loc, level, size), c in zip(fake_reads, plan.chunks):
-        assert (loc, level, size) == (c.loc, plan.level, c.size)
+        want = missing_union(plan, c.tiles)
+        assert (loc, level, size) == (want[0], plan.level, want[1])
 
 
 def test_single_chunk_plan_pushes_once_with_single_read(viewer):
@@ -176,11 +199,49 @@ def test_single_chunk_plan_pushes_once_with_single_read(viewer):
     assert len(tile_pushes) == 1
     assert set(tile_pushes[0]) == {key(t.key) for t in plan.tiles}
     assert viewer.tile_geo == expected_geo(plan)
-    # the single read is the grid-anchored block (clamped to level bounds)
-    assert fake_reads == [(plan.chunks[0].loc, 0, plan.chunks[0].size)]
+    # the single read is the union of the chunk's tiles' cells (clamped to
+    # level bounds) — not the whole block
+    want = missing_union(plan, plan.chunks[0].tiles)
+    assert fake_reads == [(want[0], 0, want[1])]
 
 
-# ---------------------------------------------------------- coalescing
+def test_partial_miss_reads_only_the_missing_tiles(viewer):
+    """A chunk whose cache lost some tiles (LRU eviction / level switch)
+    is satisfied by one read of just the missing tiles' cells — not the
+    whole block — and the re-read tiles come back byte-identical to the
+    cold fetch (same pixels, same crop, same encoding)."""
+    fake = viewer.backend._os
+    vp = Viewport(2048, 2048, 1.0, canvas_w=960, canvas_h=540)
+    plan = plan_viewport(BIG, vp, tile_size=256)
+    assert plan.level == 0
+    cache = viewer.cache
+
+    cold: dict = {}
+    for chunk in plan.chunks:
+        cold.update(fetch_chunk(viewer.backend, cache, chunk, plan))
+
+    # drop the top row of the first chunk's 2x2 tiles from the cache
+    c = plan.chunks[0]
+    assert len(c.tiles) == 4
+    top = min(t.key[2] for t in c.tiles)
+    evicted = [t for t in c.tiles if t.key[2] == top]
+    for t in evicted:
+        del cache._data[t.key]
+
+    fake.read_calls.clear()
+    out = fetch_chunk(viewer.backend, cache, c, plan)
+    assert len(fake.read_calls) == 1  # the hits cost no read
+    want = missing_union(plan, evicted)
+    assert fake.read_calls[0] == (want[0], plan.level, want[1])
+    # strictly smaller than the chunk's block rect (the old behavior read
+    # the whole block, missing or not)
+    assert want[1] < c.size
+    # re-read tiles are byte-identical to the cold fetch; hits as-is
+    for t in c.tiles:
+        assert out[t.key] == cold[t.key]
+
+
+# --- coalescing: one push per viewport change, even for rapid changes ---
 def test_rapid_js_viewports_coalesce_to_final_plan(viewer):
     """A burst of JS-originated (comm) viewport updates must end in the
     final viewport's plan — superseded viewports may be skipped, but the

@@ -11,8 +11,9 @@ Coordinate models (verified against libopenslide, see docs/DESIGN.md §8):
 
 The plan's tiles are additionally grouped into chunks (docs/DESIGN.md
 §6.6) — grid-anchored 4x4-cell (1024-px at the default cell) blocks,
-center-first by distance from the viewport center. Each chunk is one
-covering read; the widget pushes the chunks one at a time in that order
+center-first by distance from the viewport center. Each chunk's tiles are
+served by one covering read of their union; the widget pushes the chunks
+one at a time in that order
 (per-chunk push, docs/DESIGN.md §6.6.2).
 """
 from __future__ import annotations
@@ -34,20 +35,19 @@ class Tile:
 
 @dataclass(frozen=True)
 class Chunk:
-    """One center-first fetch block: a grid-anchored 4x4 tile-cell read of
-    the plan's level, with the plan's tiles that fall inside it
-    (docs/DESIGN.md §6.6).
+    """One center-first fetch block: the plan's tiles that fall in one
+    grid-anchored 4x4-tile-cell block of the plan's level (docs/DESIGN.md
+    §6.6), served by one covering read of the tiles' union (fetch layer).
 
-    ``loc``/``size`` are the ``read_region`` arguments (level-0 location,
-    level-px size); ``read_origin`` is the block's top-left in level px,
-    clamped to the level extent and anchored to the global tile grid;
-    ``tiles`` carry crops relative to :class:`ReadPlan.read_origin` as
-    always (the fetch layer converts them to the chunk read);
-    ``screen`` is the union of the tiles' screen rects (informational).
+    ``size`` is the clamped block rect in level-px (used for the
+    center-first ordering); ``read_origin`` is the block's top-left in
+    level px, clamped to the level extent and anchored to the global tile
+    grid; ``tiles`` carry crops relative to :class:`ReadPlan.read_origin`
+    as always (the fetch layer converts them to the chunk read); ``screen``
+    is the union of the tiles' screen rects (informational).
     """
 
-    loc: tuple[int, int]  # level-0 location for read_region
-    size: tuple[int, int]  # read size in level-``level`` pixels
+    size: tuple[int, int]  # clamped block size in level px (ordering)
     read_origin: tuple[int, int]  # level px of the block read's top-left
     screen: tuple[float, float, float, float]  # left, top, width, height
     tiles: tuple[Tile, ...]
@@ -111,9 +111,10 @@ def _chunk_tiles(
     A tile belongs to the grid-anchored block of its cell
     (``tx // 4``, ``ty // 4`` — a 4x4-cell, 1024-px at the default cell
     size, anchored to the global tile grid; floor grouping, so edge
-    blocks may be negative). Each block is one chunk with a single
-    covering read of its block rect clamped to the level extent, ordered
-    by squared distance from the viewport center to the block center
+    blocks may be negative). Each block is one chunk, served by one
+    covering read of its tiles' union (the fetch layer); the chunks are
+    ordered by squared distance from the viewport center to the block
+    center
     (center-first; ties keep the tile iteration order, so the order is
     deterministic).
     """
@@ -134,7 +135,6 @@ def _chunk_tiles(
         sy1 = max(tile.screen[1] + tile.screen[3] for tile in block_tiles)
         chunks.append(
             Chunk(
-                loc=(anchor_l0(ox, ds), anchor_l0(oy, ds)),
                 size=(min(block, lw - ox), min(block, lh - oy)),
                 read_origin=(ox, oy),
                 screen=(sx0, sy0, sx1 - sx0, sy1 - sy0),

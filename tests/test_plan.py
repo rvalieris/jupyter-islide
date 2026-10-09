@@ -169,7 +169,6 @@ class TestChunking:
         assert c.tiles == plan.tiles
         assert c.read_origin == (1024, 1024)  # block (1,1) on the 1024 grid
         assert c.size == (1024, 1024)
-        assert c.loc == (1024, 1024)  # ds == 1: the anchor is exact
         # the chunk read rect contains the union read rect (one covering
         # read per block; a single-block plan reads its whole block)
         rw, rh = _read_size(plan)
@@ -189,14 +188,11 @@ class TestChunking:
 
     def test_chunk_read_is_grid_anchored_block(self):
         plan = plan_viewport(BIG, vp(1900, 2000, 1.0), tile_size=256)
-        ds = plan.downsample
         for c in plan.chunks:
             # grid-anchored: block origins on the 1024-px grid (level 0)
             assert c.read_origin[0] % 1024 == 0
             assert c.read_origin[1] % 1024 == 0
             assert c.size[0] <= 1024 and c.size[1] <= 1024
-            assert c.loc == (anchor_l0(c.read_origin[0], ds),
-                             anchor_l0(c.read_origin[1], ds))
             # the chunk's screen rect is the union of its tiles' screen
             # rects (left, top, width, height)
             l = min(t.screen[0] for t in c.tiles)
