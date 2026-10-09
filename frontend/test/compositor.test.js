@@ -294,6 +294,49 @@ test('drawOverlay reprojects under a local transform (smooth pan)', () => {
   assert.ok(Math.abs(w0 - META.dimensions[0] * 2.0) < 1e-9);
 });
 
+// --------------------------------------------------------------- overview
+const OVERVIEW = { id: 'overview' };
+
+test('drawScene stretches the overview over the slide rect, below the tiles', () => {
+  const t = { cx: 200, cy: 300, zoom: 0.5, canvasW: 400, canvasH: 400 };
+  const geo = { '0:0:0': [0, 0, 0, 256, 256] };
+  const images = new Map([['0:0:0', { _ready: true, id: 'tile' }]]);
+  const ctx = mockCtx();
+  drawScene(ctx, {
+    transform: t, meta: META, tileGeo: geo, images, overview: OVERVIEW,
+  });
+  const draws = ctx.calls.draw;
+  assert.equal(draws.length, 2);
+  // The overview is first (below the tiles), at the slide's screen rect
+  // (slide origin l0 (0,0) -> screen; size = slide dimensions * zoom).
+  assert.equal(draws[0][0].id, 'overview');
+  assert.ok(Math.abs(draws[0][1] - ((0 - t.cx) * t.zoom + t.canvasW / 2)) < 1e-9);
+  assert.ok(Math.abs(draws[0][2] - ((0 - t.cy) * t.zoom + t.canvasH / 2)) < 1e-9);
+  assert.ok(Math.abs(draws[0][3] - META.dimensions[0] * t.zoom) < 1e-9);
+  assert.ok(Math.abs(draws[0][4] - META.dimensions[1] * t.zoom) < 1e-9);
+  // The tile draws above it (the seam-inflated rect is unaffected).
+  assert.equal(draws[1][0].id, 'tile');
+});
+
+test('drawScene skips the overview when the slide is fully off-canvas', () => {
+  // Far east of the canvas: the whole slide lies right of the view.
+  const t = { cx: 1e7, cy: 0, zoom: 0.01, canvasW: 512, canvasH: 512 };
+  const ctx = mockCtx();
+  drawScene(ctx, {
+    transform: t, meta: META, tileGeo: {}, images: new Map(), overview: OVERVIEW,
+  });
+  assert.equal(ctx.calls.draw.length, 0);
+});
+
+test('drawScene omits the overview when it is null (image still decoding)', () => {
+  const t = { cx: 200, cy: 300, zoom: 0.5, canvasW: 400, canvasH: 400 };
+  const ctx = mockCtx();
+  drawScene(ctx, {
+    transform: t, meta: META, tileGeo: {}, images: new Map(), overview: null,
+  });
+  assert.equal(ctx.calls.draw.length, 0);
+});
+
 // ---------------------------------------------------------------- cross-fade
 const FADE_GEO = {
   '0:0:0': [0, 0, 0, 256, 256],

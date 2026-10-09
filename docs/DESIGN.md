@@ -157,11 +157,15 @@ Per viewport change (coalesced to at most one in-flight pass):
 4. **Draw.** The JS view composites tiles into `canvas.islide-canvas` at
    `screen_pos = (tile_pos_in_slide / zoom)` with `imageSmoothing` on for
    down-scale levels, then the full-slide overlay image (if set) and, on
-   the second canvas, the annotations. Areas with no tile (outside the
-   slide bounds) show the canvas background — a gray/white checkerboard
-   (transparency-checkerboard style, an 8-px check), painted as a
-   repeating pattern fill before the tiles — out-of-bounds reads are
-   clamped, never requested.
+   the second canvas, the annotations. The canvas background is a
+   gray/white checkerboard (transparency-checkerboard style, an 8-px
+   check), painted as a repeating pattern fill before the tiles; over
+   the slide's screen rect it is covered by a whole-slide low-res
+   underlay — the minimap overview image stretched over the slide — so
+   an area inside the slide without a loaded tile yet (a pan ahead of
+   the next render pass) shows a blurry preview of the region, while
+   the checkerboard is left beyond the slide bounds. Out-of-bounds
+   reads are clamped, never requested.
 
 ### 5.1 Fetch strategy: "one big read, crop in Python"
 
@@ -320,9 +324,18 @@ Between round-trips the view keeps a **local transform**
 (`{cx, cy, zoom, canvasW, canvasH}`) and reprojects the *same* tile
 geometry (`tile_geo`, absolute level-pixel crops) under it — pan/zoom is
 instant, then the debounced sync triggers the next Python tile pass. The
-view caches decoded tile images (draw-order LRU — drawn tiles are touched
-on draw, `image_cache_max` entries, default 1000) so back-pans are
-canvas-only and eviction only ever takes off-screen tiles.
+sync is scheduled on every pan move, not only on release: while a drag
+is in flight the kernel is already planning/fetching the region the
+viewport is moving into, and the center-first per-chunk pushes (§6.6.2)
+land progressively during the drag — the trailing edge fills in roughly
+one 1024-px-block read behind the pointer instead of waiting for
+release. A superseded mid-drag pass is harmless (the JS side only
+merges, and its chunks are grid-anchored slide tiles that land in the
+image LRU). Cached tiles are untouched by all of this: they reproject
+locally and draw on the same frame as the pointer move. The view caches
+decoded tile images (draw-order LRU — drawn tiles are touched on draw,
+`image_cache_max` entries, default 1000) so back-pans are canvas-only
+and eviction only ever takes off-screen tiles.
 
 The annotation updates are the same shape of one-way updates
 (`last_polygon`, §6.4; `annotation_edit`, §6.5), so the same round-trip
@@ -452,9 +465,13 @@ moment the push lands. The cross-fade (OSD's `blendTime` idea) instead:
     loop runs only while a transition is live (stepped with real frame
     deltas); between transitions the view redraws on events, so idle CPU
     stays 0 (§9).
-- **Compositor** (`drawScene` takes `levelAlphas`): checkerboard underlay, then
-  present levels **coarsest first** (finest on top, OSD draw order), each
-  pass at its `globalAlpha`, seam margin and DPR handling unchanged. The
+- **Compositor** (`drawScene` takes `levelAlphas`): checkerboard
+  background, then the whole-slide overview underlay (the minimap image
+  stretched over the slide's screen rect — a blurry preview under the
+  not-yet-loaded tiles inside the slide; the `overview` parameter,
+  view-local, no wire), then present levels **coarsest first** (finest
+  on top, OSD draw order), each pass at its `globalAlpha`, seam margin
+  and DPR handling unchanged. The
   coarse-on-bottom ordering means the fading old level covers the screen
   while the new level's tiles land on top of it — no holes at either end
   of the fade.
@@ -643,7 +660,7 @@ openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
 |---|---|
 | Time to first pixel (local file, after kernel import) | < 2 s on a typical SVS (open is synchronous in the constructor; minimap first) |
 | Pan responsiveness (cached region) | ≤ 1 frame of perceived lag; tiles already on JS side |
-| Pan into uncached region | one `read_region` pass; ≤ ~300 ms for a 1280×720 canvas at a mid level on a local NVMe |
+| Pan into uncached region (drag in flight) | the viewport syncs every 120 ms **during** the drag (not only on release), so the kernel fetches behind the pointer: center-first, ≤ ~300 ms per 1280×720 pass on a local NVMe, chunks landing progressively |
 | Zoom into uncached region | viewport-center chunk first: the center visible within one 1024 px-block read + round trip (≤ ~200 ms); each remaining chunk is pushed as its own read lands, in the same render pass |
 | Tile transfer per full viewport | ≤ ~400 KB (≈ 20 tiles × 20 KB JPEG) |
 | Steady-state memory (cache on) | ≤ ~256 MB in the JS view worst case (`image_cache_max` 1000 tiles × ≤ 256 KB decoded) + the kernel `TileCache` (same tile count, encoded JPEG data URLs — much less) + slide handle overhead |

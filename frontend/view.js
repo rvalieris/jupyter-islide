@@ -620,6 +620,14 @@ export class SlideView extends DOMWidgetView {
       } else {
         this._transform = math.panTransform(this._transform, dx, dy);
         this._requestDraw();
+        // The pan schedules the debounced viewport sync too (not only the
+        // release in endDrag): the kernel starts planning/fetching the
+        // region the viewport is moving into while the drag is in flight,
+        // and the center-first per-chunk pushes land progressively during
+        // the drag — the trailing edge fills in behind the pointer
+        // instead of waiting for release. Cached tiles are untouched:
+        // they reproject locally and draw on this same frame.
+        this._scheduleSync();
       }
     });
     const endDrag = (e) => {
@@ -1183,6 +1191,14 @@ export class SlideView extends DOMWidgetView {
     // rAF loop below stops — the fade never runs at rest.
     const now = Date.now();
     const levelAlphas = this._blend ? blend.levelAlphas(this._blend, now) : null;
+    // Whole-slide low-res underlay: the minimap thumbnail, once decoded,
+    // stretched over the slide's screen rect below the tiles — areas
+    // inside the slide without a loaded tile yet (a pan ahead of the
+    // next render pass) show a blurry preview of the region instead of
+    // the checkerboard (which is left beyond the slide bounds).
+    const mini = this._minimapImg;
+    const overview =
+      mini && mini.complete && mini.naturalWidth > 0 ? mini : null;
     // Report the tiles actually drawn so the image cache can touch them
     // (LRU recency = last drawn; see _touchImage).
     const drawn = new Set();
@@ -1193,6 +1209,7 @@ export class SlideView extends DOMWidgetView {
       images: this._images,
       levelAlphas,
       drawn,
+      overview,
     });
     for (const key of drawn) this._touchImage(key);
     // Overlay (heatmap): over the tiles, under the annotation canvas.

@@ -74,6 +74,30 @@ function paintBackground(ctx, w, h) {
 }
 
 /**
+ * Whole-slide low-res underlay: the slide overview (the minimap
+ * thumbnail) stretched over the slide's screen rect, drawn after the
+ * checkerboard background and before the tiles. An area *inside* the
+ * slide without a loaded tile yet (a pan ahead of the next render pass)
+ * shows a blurry preview of the region instead of the checkerboard,
+ * which is left where the slide is absent (beyond the slide bounds).
+ * No-op when `overview` is null (the image is still decoding) or the
+ * slide is fully off-canvas.
+ */
+function drawOverview(ctx, t, meta, overview) {
+  if (!overview) return;
+  const [sw, sh] = meta.dimensions;
+  const [left, top] = math.l0ToScreen(t, 0, 0);
+  const w = sw * t.zoom;
+  const h = sh * t.zoom;
+  // Nothing to draw if the slide is fully off-canvas (or degenerate).
+  if (left >= t.canvasW || top >= t.canvasH
+      || left + w <= 0 || top + h <= 0) {
+    return;
+  }
+  ctx.drawImage(overview, left, top, w, h);
+}
+
+/**
  * Draw the current scene into `ctx` (already scaled for device pixel
  * ratio, origin at canvas top-left, CSS-pixel units).
  *
@@ -92,6 +116,10 @@ function paintBackground(ctx, w, h) {
  * @param {Set<string>|null} opts.drawn  when given, the keys of the tiles
  *   actually drawn are added to it (the view feeds this to its image-cache
  *   LRU touch — see SlideView._touchImage).
+ * @param {object|null} opts.overview  decoded whole-slide overview image
+ *   (the minimap thumbnail). When given, it is stretched over the
+ *   slide's screen rect below the tiles — a blurry preview of
+ *   not-yet-loaded areas inside the slide (null = none).
  * @returns {number} number of tiles drawn
  */
 /**
@@ -107,9 +135,13 @@ const SEAM_MARGIN = 0.5;
 
 export function drawScene(
   ctx,
-  { transform, meta, tileGeo, images, levelAlphas = null, drawn = null },
+  {
+    transform, meta, tileGeo, images,
+    levelAlphas = null, drawn = null, overview = null,
+  },
 ) {
   paintBackground(ctx, transform.canvasW, transform.canvasH);
+  drawOverview(ctx, transform, meta, overview);
 
   const ds = meta.level_downsamples;
   const tiles = math.visibleTiles(transform, tileGeo, ds);

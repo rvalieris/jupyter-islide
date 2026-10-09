@@ -39,7 +39,7 @@ v.canvas_h = 900            # resize the viewport height
 
 ## Annotations
 
-Import a GeoJSON document and render on an overlay canvas,
+Import a GeoJSON document and render annotations on top of the slide,
 with per-feature `color`/`fill`/`label` properties:
 
 ```python
@@ -50,7 +50,7 @@ v.clear_annotations()
 
 ## Heatmap overlay
 
-Show a full-slide image, e.g. a model's heatmap rendered at the slide's `get_thumbnail` scale,
+Show a full-slide image overlay, e.g. a model's heatmap rendered at the slide's `get_thumbnail` scale,
 over the tiles and under the annotations, with optional transparency:
 
 ```python
@@ -74,8 +74,8 @@ transport keeps the alpha channel: a heatmap on a transparent background
 
 You can create new or edit existing annotations by hand:
 
-Press **A** (crosshair) to anter annotation mode, **left-click** the vertices, 
-then press **A** to save or **Esc** to cancel. Annotations are also saved in geojson:
+Press **A** to enter annotation mode, **left-click** to add vertices, 
+then press **A** again to save or **Esc** to cancel. Annotations are also saved in geojson:
 
 ```python
 v.annotations    # the new polygon is appended here
