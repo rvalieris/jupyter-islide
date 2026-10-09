@@ -263,6 +263,7 @@ frontend/
   view.js        SlideView extends DOMWidgetView (canvas, mouse, minimap, toolbar)
   defaults.js    SLIDE_MODEL_DEFAULTS — the trait names shared with Python
                  + ISLIDE_MODULE_VERSION
+  wirecheck.js   wire-contract check: parseWireVersion / wireWarnings (pure)
   labextension.js  registers the module with IJupyterWidgetRegistry
   index.js     re-exports (npm "main")
   style/index.css
@@ -287,6 +288,22 @@ Views use the base-6 lifecycle: subclass `DOMWidgetView`, override
 `render()` (`this.el` already exists), bind with
 `this.listenTo(this.model, 'change:<attr>', …)`, and send state with
 `this.model.set(attr, value); this.model.save();`.
+
+**Wire contract check** — the manager's semver match gates
+instantiation but cannot see drift in *synced trait names*. So
+`SlideModel` snapshots the comm state's trait names in its constructor
+(the server-side set is unrecoverable from `this.attributes` once
+Backbone merges the JS defaults in), and `SlideView._checkWireContract()`
+runs `wireWarnings()` at view attach: the kernel-declared
+`_model_module_version` / `_view_module_version` must equal the
+extension's registered version (both directions); the kernel must not
+send trait names this frontend's contract does not include (the `defaults()` keys plus the base-deserialized `serializers` keys — e.g. ipywidgets' `DOMWidget` also syncs `layout`, which the base model deserializes natively and `defaults()` does not declare); and the
+comm state (shape guard for "full state": the six identity traits
+present) must not be missing data traits this frontend expects. Any
+mismatch shows a warning banner above the canvas and logs each issue to
+the console — the view still renders best-effort (missing traits fall
+back to the JS defaults). Pure functions, tested in
+`test/wirecheck.test.js`.
 
 ### 6.2 Interactions → state
 

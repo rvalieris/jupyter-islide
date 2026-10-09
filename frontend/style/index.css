@@ -171,3 +171,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Wire-contract warning banner (view.js _checkWireContract): shown when
+   the kernel's Python package and this extension disagree about the wire
+   contract (module version, synced trait names). */
+.islide-warnings {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--jp-warn-color1, #dfb012);
+  border-left: 4px solid var(--jp-warn-color1, #dfb012);
+  border-radius: 2px;
+  background: var(--jp-layout-color1, #fff);
+  color: var(--jp-ui-font-color1, #333);
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+.islide-warnings-title {
+  font-weight: 600;
+}
+.islide-warnings-hint {
+  opacity: 0.8;
+}

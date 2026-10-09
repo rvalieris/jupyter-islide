@@ -20,7 +20,7 @@
 └── frontend/                 # JS canvas view (npm: jupyter-islide)
     ├── tilemath.js  compositor.js  annotations.js  polydraw.js
     ├── blend.js                     # level cross-fade (pure)
-    ├── model.js  view.js  defaults.js  labextension.js  index.js
+    ├── model.js  view.js  defaults.js  wirecheck.js  labextension.js  index.js
     ├── style/index.css
     ├── sync-version.mjs             # keeps the frontend version in sync
     ├── labextension/  # build output (gitignored) — compiled labextension

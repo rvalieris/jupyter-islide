@@ -12,3 +12,4 @@ export { drawAnnotations, hitTest } from './annotations.js';
 export * from './polydraw.js';
 export * from './ruler.js';
 export { SLIDE_MODEL_DEFAULTS, ISLIDE_MODULE_VERSION } from './defaults.js';
+export { IDENTITY_TRAITS, parseWireVersion, wireWarnings } from './wirecheck.js';

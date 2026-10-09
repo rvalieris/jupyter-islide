@@ -22,4 +22,15 @@ export class SlideModel extends DOMWidgetModel {
     };
   }
 
+  initialize(attributes, options) {
+    super.initialize(attributes, options);
+    // Snapshot of the trait names the kernel actually sent in the comm
+    // state (the wire contract, DESIGN.md §6.1.1). Backbone merges the
+    // JS defaults into the constructor attributes, so the server-side
+    // set is no longer recoverable from `this.attributes` after this —
+    // SlideView's wire-contract check (wirecheck.js) uses the snapshot.
+    this._wireTraits = attributes
+      ? Object.keys(attributes).filter((k) => k !== 'model_id')
+      : [];
+  }
 }

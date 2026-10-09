@@ -26,6 +26,8 @@ import {
   featurePositions, hitTest, hitTestSegment, hitTestVertex, withAddedVertex,
   withMovedVertex,
 } from './annotations.js';
+import { SLIDE_MODEL_DEFAULTS, ISLIDE_MODULE_VERSION } from './defaults.js';
+import { wireWarnings } from './wirecheck.js';
 import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
@@ -82,6 +84,11 @@ export class SlideView extends DOMWidgetView {
         ? new ResizeObserver(() => this._onResize())
         : null;
     this._buildDom();
+    // Wire contract: validate the kernel's declared versions and sent
+    // trait names against this frontend's contract before anything
+    // else (DESIGN.md §6.1.1). A mismatch shows a warning banner but
+    // does not block rendering.
+    this._checkWireContract();
     this._bindModel();
     this._bindEvents();
     this.displayed.then(() => {
@@ -89,6 +96,54 @@ export class SlideView extends DOMWidgetView {
       this._maybeSendInitialViewport();
       this._requestDraw();
     });
+  }
+
+  // Wire-contract check at attach (wirecheck.js, DESIGN.md §6.1.1):
+  // the manager's semver resolution already matched the module version
+  // strings to instantiate us; this catches what slips past it and what
+  // the strings cannot express (drift in the synced trait names). On a
+  // mismatch the view keeps rendering best-effort — missing traits fall
+  // back to the JS defaults — and the problem is shown, not silent.
+  _checkWireContract() {
+    const m = this.model;
+    const warnings = wireWarnings({
+      moduleVersion: ISLIDE_MODULE_VERSION,
+      kernelVersions: {
+        _model_module_version: m.get('_model_module_version'),
+        _view_module_version: m.get('_view_module_version'),
+      },
+      wireTraits: m._wireTraits,
+      dataTraits: Object.keys(SLIDE_MODEL_DEFAULTS),
+      modelDefaultTraits: Object.keys(m.defaults()),
+      // Traits the base widget model deserializes natively (e.g. `layout`,
+      // which DOMWidget syncs but `defaults()` does not declare) — not our
+      // data contract, so not "unknown traits".
+      serializedTraits: Object.keys(m.constructor.serializers || {}),
+    });
+    if (warnings.length === 0) return;
+    for (const warning of warnings) {
+      console.warn('[islide] wire contract: ' + warning);
+    }
+    const banner = document.createElement('div');
+    banner.className = 'islide-warnings';
+    banner.setAttribute('role', 'alert');
+    const title = document.createElement('div');
+    title.className = 'islide-warnings-title';
+    title.textContent = 'Wire contract mismatch';
+    banner.appendChild(title);
+    for (const warning of warnings) {
+      const line = document.createElement('div');
+      line.textContent = warning;
+      banner.appendChild(line);
+    }
+    const hint = document.createElement('div');
+    hint.className = 'islide-warnings-hint';
+    hint.textContent =
+      'The kernel’s Python package and this JupyterLab extension are out of ' +
+      'sync — reinstall the matching jupyter-islide version, then restart ' +
+      'the kernel and hard-reload the browser (Ctrl+Shift+R).';
+    banner.appendChild(hint);
+    this.el.insertBefore(banner, this.el.firstChild);
   }
 
   // ------------------------------------------------------------------ DOM
