@@ -309,7 +309,7 @@ back to the JS defaults). Pure functions, tested in
 
 | Input | Effect |
 |---|---|
-| wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`) |
+| wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor — fit zoom of the view's actual canvas — and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`) |
 | left drag (≥ 4 px) | pan (in both modes) |
 | right drag | pan (in both modes) |
 | minimap click/drag | center viewport on that point |
@@ -568,10 +568,12 @@ from islide import SlideViewer
 v = SlideViewer("sample.svs")   # opens the slide synchronously
                                # (the constructor blocks until open,
                                #  and raises on open failure)
-                               # canvas_w (default 960) — the planning canvas
-                               # width: headless initial fit + min-zoom clamp;
-                               # the JS view's own width overrides it in the
-                               # wire form
+                               # (the planning canvas *width* is not a
+                               # constructor argument: it is JS-owned —
+                               # the view measures its real width and
+                               # reports it in the wire form. An internal
+                               # default (960) backs only the headless
+                               # pre-attach initial fit.)
                                # tile_size (default 256) — the grid cell (px)
                                # of the per-level read plan
 display(v)                     # display right after construction: the

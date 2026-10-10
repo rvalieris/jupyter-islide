@@ -300,6 +300,21 @@ def test_zoom_clamps(viewer):
     assert viewer.set_zoom(1e-9).zoom == pytest.approx(fit / 4.0)
 
 
+def test_zoom_floor_tracks_wire_canvas_w(viewer):
+    """Regression: the zoom floor derives from the current viewport's wire
+    ``canvas_w`` (the view's real width) rather than a planning width frozen
+    at construction, so the Python floor tracks JS view resizes and matches
+    the JS view's ``_zoomBounds`` floor (frontend/view.js) exactly."""
+    # Simulate the JS view: a narrow 400px canvas reporting its own size.
+    wire_w = 400
+    viewer.viewport = {
+        "cx": 23000, "cy": 16457, "zoom": 2.0, "canvas_w": wire_w
+    }
+    fit_wire = min(wire_w / 46000, 540 / 32914)
+    assert viewer.set_zoom(1e-9).zoom == pytest.approx(fit_wire / 4.0)
+    _wait_bg(viewer)
+
+
 def test_viewport_bbox_and_read_crop(viewer):
     viewer.set_zoom(1.0)
     viewer.center_on(23000, 16457)

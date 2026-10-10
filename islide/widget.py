@@ -38,6 +38,12 @@ __all__ = ["SlideViewer"]
 # The empty canonical annotation document (docs/DESIGN.md §6.3); the
 # `annotations` trait default, coerced through the normalizer on access.
 _EMPTY_ANNOTATION_DOC = {"type": "FeatureCollection", "features": []}
+# Internal planning width for headless use: the JS view reports its own
+# actual canvas width in the ``viewport`` wire form, so this only backs
+# the pre-attach initial fit (and the ``_vp_current`` fallback). It is
+# deliberately not user-settable — the cell's real width is measured by
+# the view, never chosen by the user.
+DEFAULT_PLANNING_WIDTH = 960
 
 # Overlay aspect tolerance: a full-slide image (e.g. a get_thumbnail
 # output) matches the slide's aspect ratio up to integer rounding.
@@ -282,7 +288,6 @@ class SlideViewer(widgets.DOMWidget):
     def __init__(
         self,
         path: str | None = None,
-        canvas_w: int = 960,
         canvas_h: int = 540,
         tile_size: int = 256,
         image_cache_max: int = 1000,
@@ -317,13 +322,11 @@ class SlideViewer(widgets.DOMWidget):
         slide_obj, self.path = _require_slide_source(path, slide)
         self._initial_slide = slide_obj
         self._jpeg_quality = q
-        self._canvas_w = int(canvas_w)
         self.canvas_h = int(canvas_h)
         self.image_cache_max = int(image_cache_max)
         self.tile_size = int(tile_size)
         self.cache = TileCache(int(image_cache_max))
         self._meta: SlideMeta | None = None
-        self._min_zoom = 1e-9
         self._max_zoom = 16.0
         self._render_lock = threading.Lock()
         self._rendering_bg = False
@@ -360,7 +363,6 @@ class SlideViewer(widgets.DOMWidget):
             backend = OpenSlideBackend(self.path)
         meta = backend.meta
         self._meta = meta
-        self._min_zoom = fit_zoom(meta, *self._default_canvas) / 4.0
         self.backend = backend
         self.meta = _meta_dict(meta)
         self.minimap_img = self._overview_data_url(backend, meta)
@@ -417,10 +419,24 @@ class SlideViewer(widgets.DOMWidget):
     # ----------------------------------------------------------- state access
     @property
     def _default_canvas(self) -> tuple[int, int]:
-        """Planning canvas size: constructor width + the user-settable
-        ``canvas_h`` trait. Used for the headless initial fit and the
-        min-zoom clamp."""
-        return (self._canvas_w, int(self.canvas_h))
+        """Planning canvas size: the internal default width + the
+        user-settable ``canvas_h`` trait. Headless use only — once a JS
+        view attaches, the wire ``canvas_w`` (the view's real width)
+        drives planning, and the zoom floor is derived from the current
+        viewport (see ``_min_zoom``)."""
+        return (DEFAULT_PLANNING_WIDTH, int(self.canvas_h))
+
+    @property
+    def _min_zoom(self) -> float:
+        """Zoom floor: the fit zoom of the *current* planning canvas,
+        divided by 4. The width comes from the current viewport — the
+        wire ``canvas_w`` (the view's real width once attached; the
+        internal default headless) — and the height from the ``canvas_h``
+        trait. Derived on demand so it tracks view resizes and height
+        changes, and matches the JS ``_zoomBounds`` exactly."""
+        assert self._meta is not None
+        vp = self._vp_current
+        return fit_zoom(self._meta, vp.canvas_w, vp.canvas_h) / 4.0
 
     @property
     def _vp_current(self) -> Viewport:
@@ -443,15 +459,15 @@ class SlideViewer(widgets.DOMWidget):
         )
 
     def _on_canvas_h_change(self, change: dict) -> None:
-        """Canvas height changed (user-settable synced trait): keep the
-        min-zoom clamp in step, and re-plan the current viewport at the
-        new canvas size — the height is not part of the ``viewport`` wire
-        form (planning reads it from this trait), so a plain render of
-        the unchanged viewport is what picks it up, headless or with a
-        JS view attached (the view's ResizeObserver resizes the canvas;
-        its debounced send is deduped — same wire form)."""
-        if self._meta is not None:
-            self._min_zoom = fit_zoom(self._meta, self._canvas_w, int(self.canvas_h)) / 4.0
+        """Canvas height changed (user-settable synced trait): re-plan
+        the current viewport at the new canvas size — the height is not
+        part of the ``viewport`` wire form (planning reads it from this
+        trait), so a plain render of the unchanged viewport is what
+        picks it up, headless or with a JS view attached (the view's
+        ResizeObserver resizes the canvas; its debounced send is deduped
+        — same wire form). The zoom floor is derived from the current
+        viewport (``_min_zoom``), so it picks up the new height
+        automatically."""
         if self.viewport is not None:
             self._schedule_render()
 
