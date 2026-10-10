@@ -29,12 +29,12 @@
 
 ## Versions
 
-- **Package version** (`0.6.x`): `pyproject.toml` is the single source of
+- **Package version**: `pyproject.toml` is the single source of
   truth; `frontend/package.json` and `frontend/package-lock.json` are kept in
   sync by `frontend/sync-version.mjs`, which also runs as the npm `prebuild`
   hook. A guard test pins all three
   (`tests/test_versions.py`, [docs/testing.md](testing.md)).
-- **Widget module version** (`2.1.0`): the `_model_module_version` /
+- **Widget module version**: the `_model_module_version` /
   `_view_module_version` pair, declared on the Python side
   (`islide/widget.py`) and mirrored in `frontend/defaults.js` (`ISLIDE_MODULE_VERSION`,
   pinned by `frontend/test/defaults.test.js`). It is the **wire** version —

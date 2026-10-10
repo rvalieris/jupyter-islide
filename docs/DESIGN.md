@@ -270,12 +270,12 @@ frontend/
 ```
 
 Registration (base-6 pattern, verified against `@jupyter-widgets/base`
-6.0.12 and `jupyter-widgets-jupyterlab-manager` 5.0.16):
+and `jupyter-widgets-jupyterlab-manager`):
 
 ```js
 registry.registerWidget({
   name: 'jupyter-islide',    // must equal _model_module
-  version: '2.1.0',          // must satisfy _model_module_version (semver)
+  version: 'x.y.z',          // must satisfy _model_module_version (semver)
   exports: { SlideModel, SlideView },  // keys = _model_name/_view_name
 });
 ```
@@ -568,6 +568,12 @@ from islide import SlideViewer
 v = SlideViewer("sample.svs")   # opens the slide synchronously
                                # (the constructor blocks until open,
                                #  and raises on open failure)
+                               # canvas_w (default 960) — the planning canvas
+                               # width: headless initial fit + min-zoom clamp;
+                               # the JS view's own width overrides it in the
+                               # wire form
+                               # tile_size (default 256) — the grid cell (px)
+                               # of the per-level read plan
 display(v)                     # display right after construction: the
                                # widget's first comm state already carries
                                # the full state (open slide, fit viewport,
@@ -610,8 +616,8 @@ v.close()                      # joins open thread, closes the slide handle
 
 Widget identity (must match the JS module, §6.1.1):
 `_model_name="SlideModel"`, `_view_name="SlideView"`,
-`_model_module="jupyter-islide"`, `_model_module_version="2.1.0"`. The
-module version is the **wire** version — bumped when the trait contract
+`_model_module="jupyter-islide"`, and `_model_module_version` — the
+**wire** version, bumped when the trait contract
 changes (the canonical annotation document, §6.3), independent of the
 package version.
 
@@ -710,7 +716,7 @@ Two notes that stay here:
 
 ## 11. Packaging & Dependencies
 
-Layout, the version-sync rules (package version vs. the 2.1.0 wire
+Layout, the version-sync rules (package version vs. the wire
 version), the dependencies (Python / libopenslide / JS), and the release
 mechanism — `hatchling` + the `hatch-jupyter-builder` hook builds the
 extension at wheel-build time so a single `pip install jupyter-islide`

@@ -53,6 +53,7 @@ nb / lab / ×2 DPR) when a browser is available.
 | `tests/test_widget_chunks.py` | smooth zoom: per-chunk push (a multi-chunk render assigns `tiles`/`tile_geo` once per chunk in the plan's viewport-center-first order — each push's `tile_geo` the chunk's absolute level-px crops, the union of the render's pushes the full viewport set, the traits holding the last chunk (last-event); a single-chunk render pushes exactly once; a superseded (dirty) render mid-pass leaves the final traits consistent with the latest viewport) |
 | `tests/test_overlay.py` | the full-slide overlay: `set_overlay`/`clear_overlay`, the `overlay_img`/`overlay_alpha` traits, aspect checking, the `transparent` key |
 | `tests/test_integration.py` | real open/read against the test slide (needs openslide + the downloaded slide; skips otherwise) |
+| `tests/test_rerun.py` | notebook re-run / display-timing regression: a view that attaches and bumps `resync` right after construction, and re-running the construction cell (a new widget while the previous one may still be open); both keep serving tiles when the user zooms |
 
 ## JS tests (no browser, `frontend/test/`, `node --test`)
 
@@ -65,7 +66,7 @@ The pure modules, against mock 2D contexts:
 | `compositor.test.js` | the compositor against a mock ctx: the background fill (plain light fill for the pattern-less mock; the repeating checkerboard pattern for a pattern-capable ctx — one `2s×2s` tile canvas, `paintCheckerTile`'s rects, pattern reuse across frames), per-tile `drawImage` rects, skip-not-ready, re-projection under a changed local transform, multi-level draw with per-level `globalAlpha`, coarsest-first ordering, seam margin, and `drawOverlay` (the full-slide overlay image stretched over the slide at `alpha`) |
 | `annotations.test.js` | `drawAnnotations` against a mock ctx (culling, the three draw primitives — markers incl. `MultiPoint` loops, open path, evenodd ring-set incl. flattened `MultiPolygon` islands — screen-constant widths, `color`/`fill` defaults (black/transparent), alpha (`globalAlpha`), label rendering, the selected-feature override, per-feature guard — a malformed feature is skipped, the rest still draw); `hitTest` (polygon evenodd interior / outline / holes, line distance tolerance, point radius, topmost-first, miss → `null`); the vertex-editing helpers (`featurePositions`, `withMovedVertex`, `withAddedVertex`, `hitTestVertex`, `hitTestSegment`, `addedVertexIndex`, `drawVertexHandles`, `drawInsertPreview` — all pure, incl. the flat indices, immutability, and the malformed-input → same-document / empty cases) |
 | `polydraw.test.js` | the pure draw-mode state machine (A/Esc enter/save/cancel, click-vs-drag threshold, vertex accumulation, draft-vertex moves) and `drawDraftPolygon` against a mock ctx (vertex dots, segments, dashed closure to cursor / first vertex) |
-| `defaults.test.js` | the shared model defaults — the exact trait name set (the JS half of the cross-language contract) — and the widget module version (`2.1.0`) |
+| `defaults.test.js` | the shared model defaults — the exact trait name set (the JS half of the cross-language contract) — and the widget module version |
 
 ## Cross-language contract
 
