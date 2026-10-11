@@ -587,10 +587,8 @@ def _vertex_count(geometry: dict) -> int:
 
 
 def _segment_count(geometry: dict) -> int:
-    """How many segments a flat ``add_vertex`` ``index`` can address:
-    a LineString's ``n`` positions give ``n - 1``; a ring of ``n``
-    positions gives ``n`` (the closing edge back to its first position
-    counts); Point / MultiPoint give ``0``."""
+    """Number of flat segments a feature has (canonical segment order —
+    see :func:`apply_edit`)."""
     gtype = geometry.get("type")
     coords = geometry.get("coordinates")
     if not isinstance(coords, list):
@@ -606,13 +604,11 @@ def _segment_count(geometry: dict) -> int:
 def _insert_vertex(
     geometry: dict, seg: int, point: tuple[float, float]
 ) -> tuple[dict, str]:
-    """Insert position ``point`` at flat segment ``seg`` (canonical
-    order), returning ``(geometry, kind)``: kind is ``'inserted'`` (the
-    new geometry — the input is never mutated), ``'noop'`` (a position
-    equal to ``point`` already sits at the insertion spot — the replay
-    case, the input returned unchanged), or ``'coincident'`` (``point``
-    lies on top of the segment's other endpoint — a degenerate insert).
-    """
+    """Insert position ``point`` at flat segment ``seg`` (see
+    :func:`apply_edit` for the canonical order), returning
+    ``(geometry, kind)``: ``'inserted'`` (input never mutated),
+    ``'noop'`` (replay — input returned unchanged), or ``'coincident'``
+    (degenerate insert)."""
     gtype = geometry.get("type")
     coords = geometry.get("coordinates")
     if gtype == "LineString":

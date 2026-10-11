@@ -41,8 +41,9 @@ class Chunk:
 
     ``size`` is the clamped block rect in level-px (used for the
     center-first ordering); ``read_origin`` is the block's top-left in
-    level px, clamped to the level extent and anchored to the global tile
-    grid; ``tiles`` carry crops relative to :class:`ReadPlan.read_origin`
+    level px, clamped to the level origin (negative edge blocks) and
+    anchored to the global tile grid (the block's far edge is fitted by
+    ``size``); ``tiles`` carry crops relative to :class:`ReadPlan.read_origin`
     as always (the fetch layer converts them to the chunk read); ``screen``
     is the union of the tiles' screen rects (informational).
     """
@@ -141,7 +142,6 @@ def _chunk_tiles(
                 tiles=tuple(block_tiles),
             )
         )
-    # stable sort: ties keep the tile iteration order (deterministic)
     chunks.sort(
         key=lambda c: (
             (c.read_origin[0] + c.size[0] / 2.0) * ds - vp.cx
@@ -159,8 +159,8 @@ def plan_viewport(
 ) -> ReadPlan:
     """Compute the read plan for a viewport.
 
-    One region read per level (the level covering the viewport), clamped to
-    the level bounds, sliced into a ``tile_size`` grid. The tile grid is
+    The level covering the viewport is clamped to the level bounds and
+    sliced into a ``tile_size`` grid. The tile grid is
     global (aligned to 0 at every zoom), so tiles are cache-stable across
     pan/zoom. The tiles are also grouped into chunks (grid-anchored 4x4-cell
     blocks, center-first; docs/DESIGN.md §6.6) — each chunk is

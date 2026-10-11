@@ -367,9 +367,8 @@ class SlideViewer(widgets.DOMWidget):
         self.meta = _meta_dict(meta)
         self.minimap_img = self._overview_data_url(backend, meta)
         if self.viewport is None:
-            # Headless (no JS view attached): pick the fit viewport. A JS
-            # view, once displayed, sends its own fit viewport (with the
-            # real canvas size), so this only sticks headless.
+            # Headless (no JS view attached): pick the fit viewport — see
+            # the ``DEFAULT_PLANNING_WIDTH`` comment (it only sticks headless).
             fit = fit_zoom(meta, *self._default_canvas)
             self.viewport = _vp_dict(
                 Viewport(
@@ -395,8 +394,8 @@ class SlideViewer(widgets.DOMWidget):
         """Close the slide handle and release the widget.
 
         Idempotent — safe to call multiple times, or after a re-run cell
-        created a new widget while this one was still open. Blocks until
-        an in-flight background render finishes, so the render thread
+        created a new widget while this one was still open. Blocks up to
+        10 s for an in-flight background render to finish, so the render
         never touches a closed slide handle.
         """
         deadline = time.monotonic() + 10
@@ -419,21 +418,17 @@ class SlideViewer(widgets.DOMWidget):
     # ----------------------------------------------------------- state access
     @property
     def _default_canvas(self) -> tuple[int, int]:
-        """Planning canvas size: the internal default width + the
-        user-settable ``canvas_h`` trait. Headless use only — once a JS
-        view attaches, the wire ``canvas_w`` (the view's real width)
-        drives planning, and the zoom floor is derived from the current
-        viewport (see ``_min_zoom``)."""
+        """Planning canvas size (``DEFAULT_PLANNING_WIDTH`` + the
+        ``canvas_h`` trait); headless only — see the ``DEFAULT_PLANNING_WIDTH``
+        comment."""
         return (DEFAULT_PLANNING_WIDTH, int(self.canvas_h))
 
     @property
     def _min_zoom(self) -> float:
-        """Zoom floor: the fit zoom of the *current* planning canvas,
-        divided by 4. The width comes from the current viewport — the
-        wire ``canvas_w`` (the view's real width once attached; the
-        internal default headless) — and the height from the ``canvas_h``
-        trait. Derived on demand so it tracks view resizes and height
-        changes, and matches the JS ``_zoomBounds`` exactly."""
+        """Zoom floor: the fit zoom of the current planning canvas
+        divided by 4 (width: ``canvas_w`` once attached, the headless
+        default otherwise; height: the ``canvas_h`` trait). Matches the
+        JS ``_zoomBounds`` exactly."""
         assert self._meta is not None
         vp = self._vp_current
         return fit_zoom(self._meta, vp.canvas_w, vp.canvas_h) / 4.0
@@ -459,15 +454,9 @@ class SlideViewer(widgets.DOMWidget):
         )
 
     def _on_canvas_h_change(self, change: dict) -> None:
-        """Canvas height changed (user-settable synced trait): re-plan
-        the current viewport at the new canvas size — the height is not
-        part of the ``viewport`` wire form (planning reads it from this
-        trait), so a plain render of the unchanged viewport is what
-        picks it up, headless or with a JS view attached (the view's
-        ResizeObserver resizes the canvas; its debounced send is deduped
-        — same wire form). The zoom floor is derived from the current
-        viewport (``_min_zoom``), so it picks up the new height
-        automatically."""
+        """Canvas height changed (synced trait): re-render the unchanged
+        viewport — the height is not in the wire form (see ``_vp_dict``),
+        so a plain render picks it up."""
         if self.viewport is not None:
             self._schedule_render()
 
@@ -517,13 +506,10 @@ class SlideViewer(widgets.DOMWidget):
                     dirty = self._render_dirty
                     self._render_dirty = False
                     if not dirty:
-                        # Hand off *under the lock*: a superseding
-                        # viewport registered between the last render
-                        # and this check must not be lost — clearing the
-                        # flag outside the lock would let _schedule_render
-                        # see flag=True and start nothing, and this
-                        # thread's flag clear would then swallow the
-                        # dirty render.
+                        # Hand off *under the lock*: a superseding viewport
+                        # registered between the last render and this check
+                        # must not be lost — clearing the flag outside the
+                        # lock would swallow that dirty render.
                         self._rendering_bg = False
                         return
         finally:
@@ -851,11 +837,7 @@ class SlideViewer(widgets.DOMWidget):
 
     # ------------------------------------------------------------ resync
     def _on_resync_change(self, change: dict) -> None:
-        """A JS view attached (or re-attached): re-render the current
-        viewport so it receives the full set — its image-cache seed from
-        the synced state is only the last chunk of the last render.
-
-        The counter always changes, so this fires even when the view's
-        fit-echo matches the current ``viewport`` value (a value-equal set
-        fires no viewport observer)."""
+        """A JS view attached (or re-attached): re-render so it receives
+        the full set — its image-cache seed is only the last chunk (full
+        rationale in the ``resync`` trait comment)."""
         self._schedule_render()

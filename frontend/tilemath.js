@@ -5,8 +5,7 @@
  *   viewport wire form: { cx, cy, zoom, canvas_w }
  *       cx, cy  : slide (level-0) coordinates of the canvas center
  *       zoom    : screen px per level-0 pixel (1.0 == 1:1)
- *       (the canvas height never crosses the wire: the `canvas_h` model
- *        trait is the source of truth on both sides)
+ *       (no canvas height: the `canvas_h` model trait is the source of truth)
  *   transform (JS-local): { cx, cy, zoom, canvasW, canvasH }
  *   meta:      { dimensions: [w, h], level_count, level_downsamples: [...],
  *                level_dimensions: [...], mpp, vendor }

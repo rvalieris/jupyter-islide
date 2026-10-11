@@ -18,6 +18,16 @@ import * as math from './tilemath.js';
 export const CHECKER_SIZE = 8;
 const CHECKER_LIGHT = '#ffffff';
 const CHECKER_DARK = '#cccccc';
+/**
+ * Seam margin: each tile's destination rect is inflated by this many screen
+ * px on every side, so adjacent tiles overlap by ~2*SEAM_MARGIN px. Tiles
+ * carry fractional screen rects and each drawImage is rasterized
+ * independently, so without overlap the shared boundary can end up only
+ * partially covered by both neighbours, leaving a hairline (1 device px)
+ * line where the canvas background shows through. The slight stretch
+ * (1 px on a 256+ px tile) is imperceptible.
+ */
+const SEAM_MARGIN = 0.5;
 
 /**
  * Paint one 2s × 2s checker tile into ctx (origin at the tile's top-left):
@@ -122,17 +132,6 @@ function drawOverview(ctx, t, meta, overview) {
  *   not-yet-loaded areas inside the slide (null = none).
  * @returns {number} number of tiles drawn
  */
-/**
- * Seam margin: each tile's destination rect is inflated by this many screen
- * px on every side, so adjacent tiles overlap by ~2*SEAM_MARGIN px. Tiles
- * carry fractional screen rects and each drawImage is rasterized
- * independently, so without overlap the shared boundary can end up only
- * partially covered by both neighbours, leaving a hairline (1 device px)
- * line where the canvas background shows through. The slight stretch
- * (1 px on a 256+ px tile) is imperceptible.
- */
-const SEAM_MARGIN = 0.5;
-
 export function drawScene(
   ctx,
   {

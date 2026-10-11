@@ -92,7 +92,7 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  pointer-events: none; /* the wrapper receives jumps? no — the canvas does */
+  pointer-events: none; /* display-only viewport indicator; the rect never intercepts events */
 }
 
 .islide-toolbar {

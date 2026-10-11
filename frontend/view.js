@@ -228,7 +228,7 @@ export class SlideView extends DOMWidgetView {
     // Seed the image cache from whatever tiles the model already holds:
     // the kernel's initial render usually completes before this view is
     // attached, so no change:tiles event fires for them. Without this the
-    // first draw renders empty (m:all) until the viewport happens to
+    // first draw renders empty until the viewport happens to
     // change the plan (a later push then merges), leaving the initial
     // viewport blank. Under per-chunk pushes (DESIGN §6.6.2) that seed is
     // the *last* chunk of the last render — the resync send below makes
@@ -238,10 +238,9 @@ export class SlideView extends DOMWidgetView {
     // change:tile_geo event fires for the kernel's initial render either.
     this._onTileGeoChange();
     // Attach re-render (DESIGN §6.6.2): the fit-echo below can be a
-    // no-op in Python when the viewport value is unchanged (traitlets
-    // fires no observer for a value-equal set), so the full-set
-    // re-render is requested explicitly — bump the resync counter
-    // (JS -> Py last-event slot) once per attach.
+    // Attach re-render (DESIGN §6.6.2): the fit-echo below can be a
+    // no-op in Python (a value-equal set fires no observer), so bump the
+    // resync counter once per attach to request the full-set re-render.
     this.model.set('resync', (this.model.get('resync') || 0) + 1);
     this.model.save();
   }
@@ -250,8 +249,9 @@ export class SlideView extends DOMWidgetView {
     const vp = this.model.get('viewport');
     if (vp) {
       // Apply Python's viewport (programmatic API / initial fit). The
-      // wire form carries no canvas height: the `canvas_h` trait is the
-      // source of truth (applied to the canvas in _applyCanvasHeight).
+      // Apply Python's viewport (programmatic API / initial fit); the wire
+      // form carries no canvas height — the `canvas_h` trait is the source
+      // of truth (applied in _applyCanvasHeight).
       // Never re-send from here: interaction-only updates are the sole
       // writers of the `viewport` trait from the JS side.
       this._transform = math.viewportToTransform(vp, this.model.get('canvas_h'));
