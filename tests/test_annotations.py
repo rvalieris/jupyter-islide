@@ -7,8 +7,7 @@ single Feature / bare geometry), structure-preserving normalization
 expansion (one feature per member, properties stamped, an id-bearing
 feature's id a ValueError), id assignment (explicit kept + str-coerced, fresh
 aN skipping used ids, duplicates a ValueError), properties passthrough
-(label/color/fill string-checked, the rest untouched), unit conversion
-(px default, um via mpp, before the degenerate checks), degenerate drops
+(label/color/fill string-checked, the rest untouched), degenerate drops
 (Polygon, LineString, MultiPolygon islands, feature-level warning), the
 malformed-input ValueError contract, and the pure edit commands
 (apply_edit: delete / set_label / set_color / set_vertex / add_vertex,

@@ -238,7 +238,6 @@ export class SlideView extends DOMWidgetView {
     // change:tile_geo event fires for the kernel's initial render either.
     this._onTileGeoChange();
     // Attach re-render (DESIGN §6.6.2): the fit-echo below can be a
-    // Attach re-render (DESIGN §6.6.2): the fit-echo below can be a
     // no-op in Python (a value-equal set fires no observer), so bump the
     // resync counter once per attach to request the full-set re-render.
     this.model.set('resync', (this.model.get('resync') || 0) + 1);
@@ -248,7 +247,6 @@ export class SlideView extends DOMWidgetView {
   _onViewportChange() {
     const vp = this.model.get('viewport');
     if (vp) {
-      // Apply Python's viewport (programmatic API / initial fit). The
       // Apply Python's viewport (programmatic API / initial fit); the wire
       // form carries no canvas height — the `canvas_h` trait is the source
       // of truth (applied in _applyCanvasHeight).
