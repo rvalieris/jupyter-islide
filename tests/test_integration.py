@@ -18,7 +18,7 @@ from islide.fetch import fetch_chunk
 from islide.plan import anchor_l0, plan_viewport
 from islide.viewport import Viewport
 
-from util import SLIDE_PATH, screen_covered
+from util import SLIDE_PATH, screen_covered, tile_level_rect
 
 SLIDE = str(SLIDE_PATH)
 
@@ -109,12 +109,15 @@ def test_corner_viewport(backend):
     vp = Viewport(cx=0, cy=0, zoom=0.25)
     plan = plan_viewport(backend.meta, vp, 256)
     assert plan.tiles
-    assert all(t.screen[0] >= -1e-9 and t.screen[1] >= -1e-9 for t in plan.tiles)
+    # every crop is clamped to the level, so nothing off-slide is drawn
+    lw, lh = backend.meta.level_dimensions[plan.level]
+    assert all(0 <= x0 < x1 <= lw and 0 <= y0 < y1 <= lh
+               for x0, y0, x1, y1 in (tile_level_rect(plan, t) for t in plan.tiles))
     # the in-slide corner of the canvas is covered, off-slide is not
     # (canvas is 960x540, zoom 0.25 -> on-slide region is sx in [480, 960)
     # and sy in [270, 540))
-    assert screen_covered(plan, 700, 500)
-    assert not screen_covered(plan, 100, 100)
+    assert screen_covered(plan, vp, 700, 500)
+    assert not screen_covered(plan, vp, 100, 100)
 
 
 def test_tile_cache_is_viewport_invariant(backend):

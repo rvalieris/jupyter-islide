@@ -26,11 +26,18 @@ from .viewport import SlideMeta, Viewport
 
 @dataclass(frozen=True)
 class Tile:
-    """One display tile from the read plan."""
+    """One display tile from the read plan.
+
+    ``key`` is the cache-stable grid cell; ``crop`` is the part of that cell
+    the read image actually contains, relative to
+    :attr:`ReadPlan.read_origin`. These are the plan's only coordinates: the
+    wire sends level-px geometry (``tile_geo``) and the view projects it to
+    screen px itself (``tilemath.tileScreenRect``), so the plan carries no
+    screen-space math.
+    """
 
     key: tuple[int, int, int]  # (level, tx, ty); grid cells of ``tile_size`` level px
     crop: tuple[int, int, int, int]  # box (x0, y0, x1, y1) inside the read image
-    screen: tuple[float, float, float, float]  # left, top, width, height in screen px
 
 
 @dataclass(frozen=True)
@@ -44,13 +51,11 @@ class Chunk:
     level px, clamped to the level origin (negative edge blocks) and
     anchored to the global tile grid (the block's far edge is fitted by
     ``size``); ``tiles`` carry crops relative to :class:`ReadPlan.read_origin`
-    as always (the fetch layer converts them to the chunk read); ``screen``
-    is the union of the tiles' screen rects (informational).
+    as always (the fetch layer converts them to the chunk read).
     """
 
     size: tuple[int, int]  # clamped block size in level px (ordering)
     read_origin: tuple[int, int]  # level px of the block read's top-left
-    screen: tuple[float, float, float, float]  # left, top, width, height
     tiles: tuple[Tile, ...]
 
 
@@ -130,15 +135,10 @@ def _chunk_tiles(
     for (bx, by), block_tiles in blocks.items():
         ox = max(0, bx * block)
         oy = max(0, by * block)
-        sx0 = min(tile.screen[0] for tile in block_tiles)
-        sy0 = min(tile.screen[1] for tile in block_tiles)
-        sx1 = max(tile.screen[0] + tile.screen[2] for tile in block_tiles)
-        sy1 = max(tile.screen[1] + tile.screen[3] for tile in block_tiles)
         chunks.append(
             Chunk(
                 size=(min(block, lw - ox), min(block, lh - oy)),
                 read_origin=(ox, oy),
-                screen=(sx0, sy0, sx1 - sx0, sy1 - sy0),
                 tiles=tuple(block_tiles),
             )
         )
@@ -170,7 +170,6 @@ def plan_viewport(
     level = select_level(meta.level_downsamples, vp.zoom)
     ds = meta.level_downsamples[level]
     lw, lh = meta.level_dimensions[level]
-    z = vp.zoom
     x0, y0, x1, y1 = vp.l0_bbox  # level-0 floats
 
     # Viewport in level px (floats).
@@ -209,16 +208,10 @@ def plan_viewport(
             c1y = min(ty * t + t, ry1)
             if c1x <= c0x or c1y <= c0y:
                 continue  # outside the read rect (off-slide)
-            # Screen box of the *crop* (what the image actually contains):
-            left = (c0x * ds - x0) * z
-            top = (c0y * ds - y0) * z
-            width = (c1x - c0x) * ds * z
-            height = (c1y - c0y) * ds * z
             tiles.append(
                 Tile(
                     key=(level, tx, ty),
                     crop=(c0x - rx, c0y - ry, c1x - rx, c1y - ry),
-                    screen=(left, top, width, height),
                 )
             )
 

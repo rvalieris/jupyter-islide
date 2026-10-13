@@ -7,13 +7,35 @@ import urllib.request
 from pathlib import Path
 
 
-def screen_covered(plan, sx, sy) -> bool:
-    """Is screen point (sx, sy) inside some tile's screen box?"""
-    for t in plan.tiles:
-        l, tp, w, h = t.screen
-        if l - 1e-9 <= sx < l + w + 1e-9 and tp - 1e-9 <= sy < tp + h + 1e-9:
-            return True
-    return False
+def tile_level_rect(plan, tile) -> tuple[int, int, int, int]:
+    """Absolute rect (x0, y0, x1, y1) in level px that a tile covers.
+
+    ``tile.crop`` is relative to ``plan.read_origin``; adding it back gives
+    the tile's grid cell clipped to the level — the same geometry the wire
+    sends as ``tile_geo``.
+    """
+    rx, ry = plan.read_origin
+    x0, y0, x1, y1 = tile.crop
+    return (rx + x0, ry + y0, rx + x1, ry + y1)
+
+
+def screen_covered(plan, vp, sx, sy) -> bool:
+    """Is the canvas point (sx, sy) inside some tile?
+
+    Canvas px are measured from the top-left of the viewport's level-0 bbox
+    (the frame the view draws in), so the point maps to level px as
+    ``((x0 + sx / zoom) / downsample, ...)``. The plan used to carry this
+    projection as ``Tile.screen``; nothing on the wire or in the widget uses
+    it, so the mapping lives in the harness instead.
+    """
+    x0, y0, _, _ = vp.l0_bbox
+    ds = plan.downsample
+    lx = (x0 + sx / vp.zoom) / ds
+    ly = (y0 + sy / vp.zoom) / ds
+    return any(
+        rx0 - 1e-9 <= lx < rx1 + 1e-9 and ry0 - 1e-9 <= ly < ry1 + 1e-9
+        for rx0, ry0, rx1, ry1 in (tile_level_rect(plan, t) for t in plan.tiles)
+    )
 
 
 # --------------------------------------------------------------- test slide

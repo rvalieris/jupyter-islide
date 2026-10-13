@@ -6,7 +6,7 @@ import pytest
 from islide.plan import anchor_l0, plan_viewport, select_level
 from islide.viewport import SlideMeta, Viewport
 
-from util import screen_covered
+from util import screen_covered, tile_level_rect
 
 
 def make_meta() -> SlideMeta:
@@ -88,16 +88,17 @@ class TestPlan:
     def test_covers_canvas(self, zoom):
         """Sampled on-slide screen points are all covered by some tile."""
         W, H = META.dimensions
-        plan = plan_viewport(META, vp(512, 256, zoom), tile_size=256)
+        v = vp(512, 256, zoom)
+        plan = plan_viewport(META, v, tile_size=256)
         assert plan.tiles
-        x0, y0, x1, y1 = vp(512, 256, zoom).l0_bbox
+        x0, y0, x1, y1 = v.l0_bbox
         checked = 0
         for sx in range(0, 400, 13):
             for sy in range(0, 200, 13):
                 lx, ly = x0 + sx / zoom, y0 + sy / zoom
                 if not (0 <= lx < W and 0 <= ly < H):
                     continue  # off-slide: not required to be covered
-                assert screen_covered(plan, sx, sy), (zoom, sx, sy)
+                assert screen_covered(plan, v, sx, sy), (zoom, sx, sy)
                 checked += 1
         assert checked > 0
 
@@ -108,15 +109,18 @@ class TestPlan:
         assert plan.read_origin == (0, 0)
 
     def test_corner_clamped(self):
-        plan = plan_viewport(META, vp(0, 0, 1.0), tile_size=256)
+        v = vp(0, 0, 1.0)
+        plan = plan_viewport(META, v, tile_size=256)
         assert plan.read_origin == (0, 0)
         assert plan.tiles
-        # nothing is drawn left of the canvas edge (off-slide)
-        assert all(t.screen[0] >= -1e-9 for t in plan.tiles)
+        # every crop is clamped to the level, so nothing off-slide is drawn
+        lw, lh = META.level_dimensions[plan.level]
+        assert all(0 <= x0 < x1 <= lw and 0 <= y0 < y1 <= lh
+                   for x0, y0, x1, y1 in (tile_level_rect(plan, t) for t in plan.tiles))
         # the on-slide quarter of the canvas is covered (slide occupies the
         # canvas's bottom-right quadrant here)
-        assert screen_covered(plan, 250, 150)
-        assert not screen_covered(plan, 50, 50)  # off-slide: uncovered
+        assert screen_covered(plan, v, 250, 150)
+        assert not screen_covered(plan, v, 50, 50)  # off-slide: uncovered
 
     def test_tile_grid_global_across_zoom(self):
         """Same center at two zooms -> same (level, tx, ty) tile keys,
@@ -193,13 +197,6 @@ class TestChunking:
             assert c.read_origin[0] % 1024 == 0
             assert c.read_origin[1] % 1024 == 0
             assert c.size[0] <= 1024 and c.size[1] <= 1024
-            # the chunk's screen rect is the union of its tiles' screen
-            # rects (left, top, width, height)
-            l = min(t.screen[0] for t in c.tiles)
-            tp = min(t.screen[1] for t in c.tiles)
-            r = max(t.screen[0] + t.screen[2] for t in c.tiles)
-            b = max(t.screen[1] + t.screen[3] for t in c.tiles)
-            assert c.screen == (l, tp, r - l, b - tp)
 
     def test_tile_crops_land_inside_the_chunk_read(self):
         """fetch_chunk crops tiles from the chunk read: every tile crop,
