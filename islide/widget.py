@@ -353,7 +353,7 @@ class SlideViewer(widgets.DOMWidget):
         # idempotent, so this is safe whether or not close() was also
         # called from Python.
         if self.comm is not None:
-            self.comm.on_close = lambda msg: self._close_backend()
+            self.comm.on_close(lambda msg: self._close_backend())
 
     # ------------------------------------------------------------ open/close
     def _open(self) -> None:

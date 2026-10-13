@@ -287,7 +287,11 @@ def test_frontend_comm_close_releases_backend(viewer):
     on_close handler registered in the constructor releases the
     kernel-side slide handle (docs/DESIGN.md §5.2)."""
     fake = viewer.backend._os
-    viewer.comm.on_close({})  # what the comm machinery calls
+    viewer.comm.handle_close({})  # what the comm machinery calls
+    assert "on_close" not in vars(viewer.comm), (
+        "comm.on_close was assigned instead of called, so the callback is "
+        "never registered and a frontend dispose leaks the slide handle"
+    )
     assert fake.closed
     assert viewer.backend is None and not viewer.slide_open
 
