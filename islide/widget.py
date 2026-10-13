@@ -15,6 +15,7 @@ lookup, one ``read_region`` per chunk, tiles encoded to data URLs).
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import warnings
@@ -70,6 +71,27 @@ def _check_overlay_aspect(img: Image.Image, slide_w: int, slide_h: int) -> None:
             f"({img.width}×{img.height} vs {slide_w}×{slide_h}); "
             "expected a full-slide image (e.g. a get_thumbnail output)"
         )
+
+
+def _wire_float(value: Any) -> float | None:
+    """A finite float from a wire/API value, or ``None`` if it is not one.
+
+    Rejects bools, strings, NaN and infinities: a viewport carrying any of
+    those reaches tile planning, which divides by ``zoom`` and floors
+    level-px offsets into ints — i.e. raises in the render thread.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    f = float(value)
+    return f if math.isfinite(f) else None
+
+
+def _wire_pos_int(value: Any) -> int | None:
+    """A positive int from a wire/API value, or ``None`` if it is not one."""
+    f = _wire_float(value)
+    if f is None or f < 1.0:
+        return None
+    return int(f)
 
 
 def _validate_transparent_key(
@@ -332,6 +354,10 @@ class SlideViewer(widgets.DOMWidget):
         self._rendering_bg = False
         self._render_dirty = False
         self._syncing_viewport = False
+        # Last viewport that passed _validated_viewport, and the last bad
+        # dict reported (identity), so a bad trait value is reported once.
+        self._vp_last_good: Viewport | None = None
+        self._vp_last_bad: Any = None
         self.status = "opening slide…"
         # Open the slide synchronously: by the time the constructor returns
         # the widget is fully open (or this raised). Observers are registered
@@ -423,35 +449,89 @@ class SlideViewer(widgets.DOMWidget):
         comment."""
         return (DEFAULT_PLANNING_WIDTH, int(self.canvas_h))
 
+    def _zoom_floor(self, canvas_w: int, canvas_h: int) -> float:
+        """Zoom floor of a canvas: its fit zoom divided by 4 (the JS
+        ``MIN_ZOOM_PAD``). The ceiling is ``_max_zoom``."""
+        assert self._meta is not None
+        return fit_zoom(self._meta, canvas_w, canvas_h) / 4.0
+
     @property
     def _min_zoom(self) -> float:
         """Zoom floor: the fit zoom of the current planning canvas
         divided by 4 (width: ``canvas_w`` once attached, the headless
         default otherwise; height: the ``canvas_h`` trait). Matches the
         JS ``_zoomBounds`` exactly."""
-        assert self._meta is not None
         vp = self._vp_current
-        return fit_zoom(self._meta, vp.canvas_w, vp.canvas_h) / 4.0
+        return self._zoom_floor(vp.canvas_w, vp.canvas_h)
+
+    def _default_viewport(self) -> Viewport:
+        """The initial fit-to-slide viewport on the planning canvas."""
+        meta = self._meta
+        assert meta is not None
+        cw, ch = self._default_canvas
+        return Viewport(
+            meta.dimensions[0] / 2.0,
+            meta.dimensions[1] / 2.0,
+            fit_zoom(meta, cw, ch),
+            canvas_w=cw,
+            canvas_h=ch,
+        )
+
+    def _validated_viewport(self, raw: Any) -> Viewport | None:
+        """The ``viewport`` trait as a ``Viewport``, or ``None`` if it is
+        malformed.
+
+        The trait is public and ``sync=True``, so it can arrive from the JS
+        view, from a restored notebook state, or from user code
+        (``viewer.viewport = {...}``). An unvalidated one reaches planning
+        directly and raises there — ``zoom=0`` divides by zero, ``zoom=nan``
+        cannot become a tile index, a string center cannot be subtracted —
+        so the wire boundary validates here, and clamps zoom into the same
+        ``[_min_zoom, _max_zoom]`` range ``_set_viewport_sync`` applies to
+        Python-side sets. The center is deliberately *not* clamped: panning
+        off-slide is legal on both sides (it just renders empty).
+        """
+        if not isinstance(raw, dict):
+            return None
+        cx = _wire_float(raw.get("cx"))
+        cy = _wire_float(raw.get("cy"))
+        zoom = _wire_float(raw.get("zoom"))
+        canvas_w = _wire_pos_int(raw.get("canvas_w"))
+        if cx is None or cy is None or zoom is None or canvas_w is None:
+            return None
+        canvas_h = int(self.canvas_h)
+        if self._meta is not None:
+            zoom = min(
+                max(zoom, self._zoom_floor(canvas_w, canvas_h)), self._max_zoom
+            )
+        if zoom <= 0.0:
+            return None  # degenerate slide/canvas: nothing to plan
+        return Viewport(cx, cy, zoom, canvas_w=canvas_w, canvas_h=canvas_h)
 
     @property
     def _vp_current(self) -> Viewport:
         vp = self.viewport
         if vp is None:
-            meta = self._meta
-            assert meta is not None
-            cw, ch = self._default_canvas
-            fit = fit_zoom(meta, cw, ch)
-            return Viewport(
-                meta.dimensions[0] / 2.0,
-                meta.dimensions[1] / 2.0,
-                fit,
-                canvas_w=cw,
-                canvas_h=ch,
-            )
-        return Viewport(
-            vp["cx"], vp["cy"], vp["zoom"],
-            canvas_w=vp["canvas_w"], canvas_h=int(self.canvas_h),
-        )
+            return self._default_viewport()
+        good = self._validated_viewport(vp)
+        if good is not None:
+            self._vp_last_good = good
+            return good
+        # Malformed dict: keep the last viewport that made sense rather than
+        # raising where only the render thread would see it (the user then
+        # sees a stale frame and a traceback in the kernel log). Warned and
+        # reported once per bad value — identity, not equality — so a trait
+        # stuck on a bad dict says it once, not on every render.
+        if vp is not self._vp_last_bad:
+            self._vp_last_bad = vp
+            warnings.warn(f"islide: ignoring malformed viewport: {vp!r}",
+                          UserWarning)
+            self.status = "viewport ignored: malformed"
+        if self._vp_last_good is not None:
+            return self._vp_last_good
+        if self._meta is None:
+            raise ValueError(f"malformed viewport and no slide open: {vp!r}")
+        return self._default_viewport()
 
     def _on_canvas_h_change(self, change: dict) -> None:
         """Canvas height changed (synced trait): re-render the unchanged
@@ -501,7 +581,17 @@ class SlideViewer(widgets.DOMWidget):
     def _render_loop(self) -> None:
         try:
             while True:
-                self._render_once()
+                try:
+                    self._render_once()
+                except Exception as exc:
+                    # A render failure must not escape the thread (an
+                    # unhandled exception there is a traceback in the
+                    # kernel log and a silently stale frame) and must not
+                    # kill the loop: the traits keep the last good frame,
+                    # the status says what happened, and the next viewport
+                    # renders normally.
+                    warnings.warn(f"islide: render failed: {exc}", UserWarning)
+                    self.status = f"render failed: {exc}"
                 with self._render_lock:
                     dirty = self._render_dirty
                     self._render_dirty = False
