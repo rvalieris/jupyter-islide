@@ -588,7 +588,13 @@ export class SlideView extends DOMWidgetView {
       e.preventDefault();
       this._clearLocalStatusIfIdle();
       if (!this._transform) return;
-      const factor = Math.exp(-e.deltaY * 0.002);
+      // deltaY is in pixels, lines or pages depending on the browser
+      // (`deltaMode`); normalise before exponentiating so one notch zooms
+      // the same amount in Firefox as in Chrome (tilemath.wheelZoomFactor).
+      const factor = math.wheelZoomFactor(
+        e.deltaY, e.deltaMode, this._transform.canvasH,
+      );
+      if (factor === 1) return; // no usable delta: nothing to zoom by
       const rect = this._canvas.getBoundingClientRect();
       const [minZoom, maxZoom] = this._zoomBounds();
       this._transform = math.zoomAtCursor(

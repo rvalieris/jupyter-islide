@@ -145,3 +145,67 @@ test('visibleTiles reports each tile level (cross-fade input)', () => {
   assert.equal(levels.get('0:0:0'), 0);
   assert.equal(levels.get('1:0:0'), 1);
 });
+
+
+// --- wheel zoom: deltaMode normalisation ------------------------------------
+
+const MAX_STEP = Math.exp(math.WHEEL_MAX_DELTA_PX * math.WHEEL_ZOOM_PER_PX); // ≈ 2.23
+
+test('wheelZoomFactor: one notch zooms the same in Chrome and Firefox', () => {
+  // Chrome/Safari report a mouse-wheel notch in pixels (~100 px); Firefox
+  // reports the same notch as 3 lines (deltaMode 1).
+  const chrome = math.wheelZoomFactor(100, 0);
+  const firefox = math.wheelZoomFactor(3, 1);
+  assert.ok(chrome < 1 && firefox < 1); // scrolling down zooms out
+  assert.ok(
+    Math.abs(chrome - firefox) < 0.01,
+    `notch mismatch: chrome ${chrome}, firefox ${firefox}`,
+  );
+  // The old `exp(-deltaY * 0.002)` gave Firefox ~33x less zoom per notch.
+  const oldFirefox = Math.exp(-3 * math.WHEEL_ZOOM_PER_PX);
+  assert.ok(Math.log(oldFirefox) / Math.log(chrome) < 0.04);
+  // Zoom in is the reciprocal of zoom out, in both browsers.
+  assert.ok(Math.abs(math.wheelZoomFactor(-100, 0) - 1 / chrome) < 1e-12);
+  assert.ok(Math.abs(math.wheelZoomFactor(-3, 1) - 1 / firefox) < 1e-12);
+});
+
+test('wheelZoomFactor: page mode scales by the canvas height', () => {
+  const onePage = math.wheelZoomFactor(1, 2, 540);
+  // 540 px of content, capped to WHEEL_MAX_DELTA_PX: a page notch is a big
+  // gesture, but it is still bounded.
+  assert.ok(Math.abs(onePage - 1 / MAX_STEP) < 1e-12);
+  assert.ok(onePage < 1);
+  // No canvas height available: the fallback page is bounded too.
+  assert.ok(math.wheelZoomFactor(1, 2) >= 1 / MAX_STEP - 1e-12);
+});
+
+test('wheelZoomFactor: capped so one flick cannot teleport the zoom', () => {
+  const cases = [[1e6, 0], [-1e6, 0], [1e4, 1], [-1e4, 1], [1e3, 2], [40, 1]];
+  for (const [dy, mode] of cases) {
+    const f = math.wheelZoomFactor(dy, mode);
+    assert.ok(
+      f <= MAX_STEP + 1e-12 && f >= 1 / MAX_STEP - 1e-12,
+      `delta ${dy} mode ${mode}: ${f}`,
+    );
+  }
+  // Ordinary gestures sit well inside the cap; it only shapes flicks.
+  assert.ok(math.wheelZoomFactor(120, 0) > 1 / MAX_STEP);
+  assert.ok(math.wheelZoomFactor(120, 0) < MAX_STEP);
+  assert.ok(math.wheelZoomFactor(0.5, 1) > 1 / MAX_STEP); // a trackpad tick
+});
+
+test('wheelZoomFactor: a delta that is not a number zooms by nothing', () => {
+  for (const dy of [0, undefined, null, NaN, Infinity, -Infinity, '100']) {
+    assert.equal(math.wheelZoomFactor(dy, 0), 1, `delta ${String(dy)}`);
+  }
+});
+
+test('wheelZoomFactor feeds zoomAtCursor identically across browsers', () => {
+  const [minZoom, maxZoom] = [math.fitZoom(META, 960, 540) / 4, 16];
+  const chrome = math.zoomAtCursor(T, math.wheelZoomFactor(100, 0), 480, 270, minZoom, maxZoom);
+  const firefox = math.zoomAtCursor(T, math.wheelZoomFactor(3, 1), 480, 270, minZoom, maxZoom);
+  assert.ok(Math.abs(chrome.zoom / firefox.zoom - 1) < 5e-3); // < 0.5 % apart
+  // Cursor at the canvas center: the center stays put in both.
+  assert.ok(Math.abs(chrome.cx - firefox.cx) < 1e-9);
+  assert.ok(Math.abs(chrome.cy - firefox.cy) < 1e-9);
+});

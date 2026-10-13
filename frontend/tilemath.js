@@ -80,6 +80,40 @@ export function zoomAtCursor(t, factor, sx, sy, minZoom, maxZoom) {
 }
 
 /**
+ * Wheel-event zoom factor (input for `zoomAtCursor`).
+ *
+ * `WheelEvent.deltaY` is unitless until you read `deltaMode` with it: 0 =
+ * pixels, 1 = lines, 2 = pages. Exponentiating the raw number makes the
+ * gesture browser-dependent — one mouse-wheel notch is ~100 px in
+ * Chrome/Safari but 3 *lines* in Firefox (its default of 3 scroll-lines per
+ * notch), so the same notch zoomed ~33x less there. Normalising to pixels
+ * first makes one notch one notch: WHEEL_LINE_PX is calibrated so Firefox's
+ * 3-line notch lands on Chrome's ~100 px notch.
+ *
+ * The normalised delta is then capped, because kinetic/trackpad scrolling
+ * can carry hundreds of lines in one event and `exp` turns that into a
+ * teleport. One event moves at most WHEEL_MAX_DELTA_PX of content, i.e. a
+ * factor in [1/exp(0.8), exp(0.8)] ≈ [0.45, 2.23]. A normal notch (~100 px)
+ * is nowhere near the cap, which only shapes flicks. A delta that is not a
+ * finite number gives 1 (nothing to zoom by), so a stray event cannot move
+ * the view at all.
+ */
+export const WHEEL_ZOOM_PER_PX = 0.002; // unchanged sensitivity, now per pixel
+export const WHEEL_LINE_PX = 33; // ~100 px / notch ÷ 3 lines / notch (Firefox)
+export const WHEEL_PAGE_PX = 400; // page-mode fallback when no canvas height
+export const WHEEL_MAX_DELTA_PX = 400; // one event moves at most this much
+
+export function wheelZoomFactor(deltaY, deltaMode = 0, canvasH = 0) {
+  let px;
+  if (deltaMode === 1) px = deltaY * WHEEL_LINE_PX;
+  else if (deltaMode === 2) px = deltaY * (canvasH > 0 ? canvasH : WHEEL_PAGE_PX);
+  else px = deltaY; // 0 (pixels), and anything unknown: treat as pixels
+  if (!Number.isFinite(px)) return 1;
+  px = Math.max(-WHEEL_MAX_DELTA_PX, Math.min(WHEEL_MAX_DELTA_PX, px));
+  return Math.exp(-px * WHEEL_ZOOM_PER_PX);
+}
+
+/**
  * Pan by a screen-pixel delta (positive = drag toward +x/+y).
  */
 export function panTransform(t, dxScreen, dyScreen) {

@@ -309,7 +309,7 @@ back to the JS defaults). Pure functions, tested in
 
 | Input | Effect |
 |---|---|
-| wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor — fit zoom of the view's actual canvas — and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`) |
+| wheel / trackpad pinch | zoom about the cursor; `zoom` continuous, clamped to `[fit_zoom/4, 16]` (the fit floor — fit zoom of the view's actual canvas — and the 16× ceiling match the Python-side clamp in `_set_viewport_sync`); the wheel delta is normalised by `deltaMode` (pixels / lines / pages) and capped per event before it becomes a zoom factor, so one notch zooms the same amount in Chrome and Firefox (`tilemath.wheelZoomFactor`) |
 | left drag (≥ 4 px) | pan (in both modes) |
 | right drag | pan (in both modes) |
 | minimap click/drag | center viewport on that point |
