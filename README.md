@@ -90,7 +90,11 @@ v.set_annotation_color("a1", color="red", fill=None)  # set colors
 See `examples/viewer_demo.ipynb` (canvas, programmatic control) or
 `examples/annotations_demo.ipynb` (GeoJSON import, polygon drawing, editing) for a walkthrough.
 
-### Building the release wheel
+## Docs
+
+Design, internals, and contributor docs: [docs/index.md](docs/index.md).
+
+## Building the release wheel
 
 Building a wheel compiles `frontend/` into a labextension and embeds it in
 the wheel. This needs **Node/npm on the PATH**; `jupyterlab==4.*` is installed
@@ -105,7 +109,7 @@ python -m build --wheel    # builds frontend/ -> dist/jupyter-islide-<ver>-py3-n
 `pip install .` / installing from a git tag builds the same way under the
 hood (pip invokes the same `hatchling` + `jupyter-builder` hook).
 
-### Developing
+## Developing
 
 - **Python** (editable): `pip install -e ".[dev]"`. This also runs the JS
   build via the hook; if Node/JupyterLab are unavailable the build is skipped

@@ -6,3 +6,8 @@ dist
 # frontend (JS) build artifacts + node deps
 frontend/node_modules/
 frontend/labextension/
+
+# agent work area (local only): specs, review notes, tickets
+.scratch/
+.agents
+AGENTS.md

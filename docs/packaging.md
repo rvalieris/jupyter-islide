@@ -3,8 +3,7 @@
 ```
 .
 ├── pyproject.toml            # hatchling + hatch-jupyter-builder hook;
-│                             #   deps: ipywidgets>=8, openslide-python>=1.4,
-│                             #   pillow>=9; MIT license
+│                             #   dependency floors live here; MIT license
 ├── LICENSE                   # MIT
 ├── islide/
 │   ├── __init__.py           # SlideViewer, Viewport, …
@@ -37,16 +36,18 @@
 - **Widget module version**: the `_model_module_version` /
   `_view_module_version` pair, declared on the Python side
   (`islide/widget.py`) and mirrored in `frontend/defaults.js` (`ISLIDE_MODULE_VERSION`,
-  pinned by `frontend/test/defaults.test.js`). It is the **wire** version —
-  bumped when the trait contract changes (the `annotations` trait's type
-  became the canonical annotation document at `2.0.0`; the per-chunk
-  `tiles`/`tile_geo` push and the `resync` attach counter at `2.1.0`),
+  pinned by `frontend/test/defaults.test.js`). It is the **Wire version** —
+  bumped when the trait contract changes, and the two contract changes it has
+  carried so far are the `annotations` trait's type becoming the canonical
+  annotation document, and the per-chunk `tiles`/`tile_geo` push together with
+  the `resync` attach counter,
   independent of the package version.
 
 ## Dependencies
 
-- **Python**: `ipywidgets>=8`, `openslide-python>=1.4` (uses the OO API —
-  [docs/openslide-api.md](openslide-api.md)), `pillow>=9`.
+- **Python**: `ipywidgets`, `openslide-python` (used through its object-oriented
+  API — [docs/openslide-api.md](openslide-api.md)), and `pillow`; the floors are
+  declared in `pyproject.toml` and are not restated here.
 - **System lib**: `libopenslide` — the conda-forge `openslide` package,
   `libopenslide0` on Debian/Ubuntu, or `pip install openslide-bin` (a
   libopenslide wheel for environments where the system package is
@@ -69,7 +70,7 @@ the wheel, the standard JupyterLab 4 labextensions discovery path. So:
 
 - `pip install jupyter-islide` installs **both** the Python package and the
   pre-built extension in one step (no end-user npm).
-- The build env gets `jupyterlab==4.*` automatically (declared in
+- The build env gets JupyterLab automatically (declared in
   `[build-system] requires`); Node/npm must be on the PATH.
 - `islide/_jupyter_labextension_paths()` (matching the ipyleaflet pattern)
   points at `../frontend/labextension` → `dest: jupyter-islide`, which is what

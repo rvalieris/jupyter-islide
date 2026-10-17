@@ -1,8 +1,8 @@
 # OpenSlide / openslide-python API notes
 
-Verified against openslide-python 1.4.6 / libopenslide 4.0.1 (the generic-TIFF
-vendor, `data/CMU-1.tiff`). `islide/backend.py` is the only module that
-touches openslide; the notes below are the contract it relies on.
+Verified against the openslide-python / libopenslide pair in the current dev
+environment, on the generic-TIFF vendor (`data/CMU-1.tiff`). `islide/backend.py` is
+the only module that touches openslide; the notes below are the contract it relies on.
 
 - `openslide.open_slide(path) -> OpenSlide` (object-oriented API; the
   C-style `lowlevel` module also exists).
@@ -15,12 +15,12 @@ touches openslide; the notes below are the contract it relies on.
 - `slide.read_region(location=(x,y), level=L, size=(w,h)) -> PIL.Image`
   (mode `RGBA`). `location` is in level-0 coordinates; `size` is the region
   size (pixels at level L).
-  - **Out-of-bounds** (verified, generic-tiff / libopenslide 4.0.1): the
+  - **Out-of-bounds** (verified, generic-TIFF vendor): the
     return is always exactly `size`, and out-of-bounds areas are filled with
     *transparent black* — compositing onto white before JPEG gives the
     expected white background at the slide edge. Fill color is
     vendor-dependent, but "always exactly `size`" holds.
-  - **Location anchor** (verified, generic-tiff / 4.0.1): the returned
+  - **Location anchor** (verified, generic-TIFF vendor): the returned
     image's top-left is level pixel `floor(location / ds)` per axis
     (unaligned level-0 locations are accepted). Therefore to anchor a read
     at exactly level pixel `p` use `location = ceil(p * ds)` (see

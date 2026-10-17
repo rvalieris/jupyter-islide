@@ -5,12 +5,16 @@ interactively exploring pathology whole-slide images (WSIs) in Jupyter,
 backed by [OpenSlide](https://openslide.org/) via
 [openslide-python](https://github.com/openslide/openslide-python).
 
-This document describes the system as it is. Deep dives live in
-[docs/](docs/): the annotation document model, drawing, and editing
-([docs/annotations.md](docs/annotations.md)); the test suites
-([docs/testing.md](docs/testing.md)); packaging, dependencies, and release
-([docs/packaging.md](docs/packaging.md)); verified OpenSlide API notes
-([docs/openslide-api.md](docs/openslide-api.md)).
+This document describes the system as it is. [index.md](index.md) is the reader map; the
+deep dives live alongside it: the annotation document model, drawing, and editing
+([annotations.md](annotations.md)); the test suites
+([testing.md](testing.md)); packaging, dependencies, and release
+([packaging.md](packaging.md)); verified OpenSlide API notes
+([openslide-api.md](openslide-api.md)).
+
+**The § numbers in this file are load-bearing.** Comments across `islide/`, `frontend/`, and
+`tests/` cite them by number (`docs/DESIGN.md §6.6.2` and friends), so keep the numbering
+stable: extend a range or add a new subsection at its end rather than renumbering.
 
 ---
 
@@ -46,7 +50,7 @@ notebook, drive it from Python.
   `read_crop`.
 - Annotation overlay: import shapes from GeoJSON, hand-draw polygons, and
   select / delete / label / recolor / vertex-edit them in the view
-  ([docs/annotations.md](docs/annotations.md)).
+  ([annotations.md](annotations.md)).
 - Full-slide overlay image with adjustable opacity (e.g. a model heatmap
   over the H&E stain).
 - Stay in the kernel: no external server, no tile pyramid to pre-generate.
@@ -129,7 +133,7 @@ trivial, and keeps the JS tiny.
   (crisp, cheap). We do **not** use
   `slide.get_best_level_for_downsample(1/zoom)`: it picks the *coarsest*
   level with `ds <= requested`, which can up-scale (see
-  [docs/openslide-api.md](docs/openslide-api.md)).
+  [openslide-api.md](openslide-api.md)).
 
 ## 5. Rendering Pipeline
 
@@ -386,7 +390,7 @@ canonical GeoJSON `FeatureCollection` in level-0 px (one `{id, geometry,
 properties}` feature per shape, unique string ids). The full form —
 source geometries, normalization rules, validation errors, the
 `properties` contract — is specified in
-[docs/annotations.md](docs/annotations.md).
+[annotations.md](annotations.md).
 
 ### 6.4 Polygon drawing
 
@@ -400,7 +404,7 @@ with a warning and a status line) and appends a `Polygon` feature with a
 fresh non-colliding id (`a0`, `a1`, …). No programmatic draw API —
 drawing is a view interaction; the result lands in `v.annotations`
 like everything else. Details in
-[docs/annotations.md](docs/annotations.md).
+[annotations.md](annotations.md).
 
 ### 6.4.1 Ruler measurement (view-local; `frontend/ruler.js`)
 
@@ -440,7 +444,7 @@ id → no push, status `edit ignored: unknown annotation id`; a refused
 vertex edit (bad index / non-finite / coincident / degenerate result) →
 `ValueError` from `apply_edit`, status `edit ignored: <reason>`, document
 untouched. Details in
-[docs/annotations.md](docs/annotations.md).
+[annotations.md](annotations.md).
 
 ### 6.6 Smooth zoom: level cross-fade, center-first fetch
 
@@ -450,8 +454,8 @@ across level changes and viewport-center-first tile fetch. Both are ported
 **Python owns all state and decoding; the JS view is a compositor**
 (§3). The cross-fade adds no wire (view-local draw policy); the
 §6.6.2 per-chunk push changes *how* the tile set is delivered (last-event
-`tiles`/`tile_geo` pushes + an attach `resync` counter — module version
-2.1.0).
+`tiles`/`tile_geo` pushes + an attach `resync` counter), and that delivery
+shape is what the current Wire version pins.
 
 #### 6.6.1 Level cross-fade (view-local draw policy; `frontend/blend.js`, pure module)
 
@@ -673,11 +677,11 @@ path.
 
 ## 8. Verified OpenSlide / openslide-python API notes
 
-The contract `islide/backend.py` relies on, verified against
-openslide-python 1.4.6 / libopenslide 4.0.1 (properties-not-callables,
-`read_region` out-of-bounds and location-anchor behavior, why
-`get_best_level_for_downsample` is not used, …): see
-[docs/openslide-api.md](docs/openslide-api.md).
+The contract `islide/backend.py` relies on, verified against the current
+openslide-python / libopenslide pair on the generic-TIFF vendor
+(properties-not-callables, `read_region` out-of-bounds and location-anchor
+behavior, why `get_best_level_for_downsample` is not used, …): see
+[openslide-api.md](openslide-api.md).
 
 ## 9. Performance budget (targets)
 
@@ -703,7 +707,7 @@ plain Python object until displayed, the whole Python-side state machine
 is tested headless, and the JS pure modules are tested against mock 2D
 contexts. Full per-file coverage table, the test slide sourcing, and the
 cross-language trait-contract guard:
-[docs/testing.md](docs/testing.md).
+[testing.md](testing.md).
 
 Two notes that stay here:
 
@@ -723,4 +727,4 @@ version), the dependencies (Python / libopenslide / JS), and the release
 mechanism — `hatchling` + the `hatch-jupyter-builder` hook builds the
 extension at wheel-build time so a single `pip install jupyter-islide`
 carries both the Python API and the pre-built JupyterLab extension:
-[docs/packaging.md](docs/packaging.md).
+[packaging.md](packaging.md).
