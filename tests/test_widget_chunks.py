@@ -9,9 +9,12 @@ single-chunk plan pushes once with a single grid-anchored read (the
 single-push wire contract); reads happen center-first in chunk order;
 and a burst of JS-originated viewports coalesces to a final state
 matching the final plan (the render-loop handoff).
+teardown: the single close path refuses a render to start and waits for the
+    running one, so the slide handle is never freed under an outstanding read.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -87,6 +90,9 @@ class FakeSlide:
         self.properties = {"openslide.vendor": "fake"}
         self.read_calls: list[tuple] = []
         self.closed = False
+        self.outstanding = 0
+        self.max_outstanding_at_close = 0
+        self.gate: ReadGate | None = None  # set by the teardown tests
 
     @staticmethod
     def _stripe(w: int, h: int) -> Image.Image:
@@ -102,18 +108,47 @@ class FakeSlide:
 
     def read_region(self, location, level, size):
         self.read_calls.append((tuple(location), level, tuple(size)))
-        img = self._levels[level]
-        ds = self.level_downsamples[level]
-        x = int(location[0] / ds)
-        y = int(location[1] / ds)
-        w, h = int(size[0]), int(size[1])
-        return img.crop((x, y, x + w, y + h))
+        self.outstanding += 1
+        try:
+            if self.gate is not None:
+                self.gate.park()  # a read in flight, as libopenslide holds one
+            img = self._levels[level]
+            ds = self.level_downsamples[level]
+            x = int(location[0] / ds)
+            y = int(location[1] / ds)
+            w, h = int(size[0]), int(size[1])
+            return img.crop((x, y, x + w, y + h))
+        finally:
+            self.outstanding -= 1
 
     def get_thumbnail(self, size):
         return self._levels[0].resize(tuple(int(s) for s in size))
 
     def close(self):
         self.closed = True
+        # openslide_close() aborts the process when a read is still using the
+        # handle; recording the worst outstanding count at close time turns
+        # that crash into an assertion a test suite can actually catch.
+        self.max_outstanding_at_close = max(
+            self.max_outstanding_at_close, self.outstanding
+        )
+
+
+class ReadGate:
+    """Parks a :class:`FakeSlide` read until the test releases it.
+
+    The teardown tests need a read that is genuinely still in flight when
+    teardown starts — the real one is, because ``openslide_read_region`` is a
+    ctypes call that releases the GIL, so the closing thread runs beside it.
+    """
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.released = threading.Event()
+
+    def park(self):
+        self.entered.set()
+        self.released.wait(10)
 
 
 @pytest.fixture()
@@ -296,10 +331,122 @@ def test_frontend_comm_close_releases_backend(viewer):
     assert viewer.backend is None and not viewer.slide_open
 
 
-def test_close_waits_for_inflight_background_render(viewer):
-    """close() must not close the slide handle out from under a running
-    background render: it blocks until the render thread finishes."""
-    viewer.set_zoom(2.0)  # schedules a background render
+def _js_viewport(step: int) -> dict:
+    """A JS-originated (comm-form) viewport several chunks wide."""
+    return {
+        "cx": 2048.0 + step * 300,
+        "cy": 2048.0 + step * 150,
+        "zoom": 1.0,
+        "canvas_w": 960,
+    }
+
+
+def _gated(viewer) -> FakeSlide:
+    """The viewer's FakeSlide, with its reads parked until the test releases."""
+    fake = viewer.backend._os
+    fake.gate = ReadGate()
+    return fake
+
+
+def _render_in_background(viewer, step: int = 0) -> None:
+    """A plain ``viewport`` write — the JS-originated path, which renders on
+    the islide-render thread, unlike the Python API's inline render."""
+    viewer.viewport = _js_viewport(step)
+
+
+def test_close_waits_for_an_outstanding_read(viewer):
+    """close() must not release the slide handle while a render thread is
+    inside a read. openslide_close() requires that no other thread is using
+    the object, and violating it aborts the kernel process outright; the
+    wait is on the render loop's exit, not on a polled flag."""
+    fake = _gated(viewer)
+    _render_in_background(viewer)
+    assert fake.gate.entered.wait(5), "the render never reached read_region"
+
+    closer = threading.Thread(target=viewer.close, daemon=True)
+    closer.start()
+    time.sleep(0.2)
+    assert not fake.closed, "close() freed the slide handle beside an in-flight read"
+
+    fake.gate.released.set()
+    closer.join(10)
+    assert fake.closed and viewer.backend is None
+    assert fake.max_outstanding_at_close == 0
+    assert not viewer._rendering_bg and viewer._render_done.is_set()
+
+
+def test_comm_close_waits_for_an_outstanding_read(viewer):
+    """Frontend disposal routes straight to ``_close_backend``, so it must
+    carry the same wait as ``close()``: one teardown path for both entry
+    points (docs/DESIGN.md §5.2). Clearing the output or re-running the cell
+    while the last render is still reading must not free the handle under it."""
+    fake = _gated(viewer)
+    _render_in_background(viewer, step=1)
+    assert fake.gate.entered.wait(5), "the render never reached read_region"
+
+    closer = threading.Thread(
+        target=lambda: viewer.comm.handle_close({}), daemon=True
+    )
+    closer.start()
+    time.sleep(0.2)
+    assert not fake.closed, "the comm close freed the slide handle mid-read"
+
+    fake.gate.released.set()
+    closer.join(10)
+    assert fake.closed and viewer.backend is None
+    assert fake.max_outstanding_at_close == 0
+
+
+def test_a_render_stops_at_its_next_chunk_after_close(viewer):
+    """The per-chunk guard: a render that was already past its entry check
+    skips its remaining chunks instead of starting a fresh read beside a
+    closing handle."""
+    fake = _gated(viewer)
+    _render_in_background(viewer, step=2)
+    assert fake.gate.entered.wait(5)
+    plan = plan_viewport(BIG, Viewport(**_js_viewport(2)), tile_size=256)
+    assert len(plan.chunks) > 1  # chunks left for the guard to refuse
+    reads_at_park = len(fake.read_calls)  # includes the parked chunk's own read
+
+    closer = threading.Thread(target=viewer.close, daemon=True)
+    closer.start()
+    time.sleep(0.1)  # teardown is parked behind the in-flight read
+    fake.gate.released.set()
+    closer.join(10)
+
+    # the parked chunk's read is the only one: the plan's later chunks were
+    # refused by the guard rather than read beside the closing handle
+    assert len(fake.read_calls) == reads_at_park
+
+
+def test_no_render_starts_after_close(viewer):
+    """Teardown refuses a render: a viewport that arrives after disposal
+    cannot start a thread that reads a handle being closed."""
+    fake = viewer.backend._os
     viewer.close()
-    assert viewer.backend is None
-    assert not viewer._rendering_bg
+    reads = len(fake.read_calls)
+
+    _render_in_background(viewer, step=3)
+    viewer._schedule_render()  # the guard is in the scheduler, not only the observer
+    time.sleep(0.1)
+    assert len(fake.read_calls) == reads
+    assert not viewer._rendering_bg and viewer._render_done.is_set()
+
+
+def test_teardown_timeout_warns_and_closes_anyway(monkeypatch, viewer):
+    """The bounded wait: a render loop outlasting ``_TEARDOWN_TIMEOUT`` is
+    reported and the handle is closed regardless — the accepted trade-off
+    (a hung vendor read, not a teardown that never returns)."""
+    monkeypatch.setattr("islide.widget._TEARDOWN_TIMEOUT", 0.05)
+    fake = _gated(viewer)
+    _render_in_background(viewer, step=4)
+    assert fake.gate.entered.wait(5)
+
+    try:
+        with pytest.warns(UserWarning, match="teardown"):
+            viewer.close()
+    finally:
+        fake.gate.released.set()
+
+    assert fake.closed and viewer.backend is None
+    assert fake.max_outstanding_at_close == 1  # the known, reported trade-off

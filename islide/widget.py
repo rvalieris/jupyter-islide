@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import math
 import threading
-import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -49,6 +48,11 @@ DEFAULT_PLANNING_WIDTH = 960
 # Overlay aspect tolerance: a full-slide image (e.g. a get_thumbnail
 # output) matches the slide's aspect ratio up to integer rounding.
 _OVERLAY_ASPECT_TOL = 0.01
+
+# Teardown waits at most this long for the background render loop to exit
+# before closing the slide handle anyway (docs/DESIGN.md §5.2). A read that
+# outlasts it is abnormal (vendor read or a hung I/O path), not a drag.
+_TEARDOWN_TIMEOUT = 10.0
 
 
 def _load_overlay_image(source: str | Path | Image.Image) -> Image.Image:
@@ -352,6 +356,11 @@ class SlideViewer(widgets.DOMWidget):
         self._max_zoom = 16.0
         self._render_lock = threading.Lock()
         self._rendering_bg = False
+        # Set whenever no render loop is running. The single teardown path
+        # waits on it so the slide handle is never freed under an in-flight
+        # read (openslide_close() aborts the process if one is outstanding).
+        self._render_done = threading.Event()
+        self._render_done.set()
         self._render_dirty = False
         self._syncing_viewport = False
         # Last viewport that passed _validated_viewport, and the last bad
@@ -420,23 +429,38 @@ class SlideViewer(widgets.DOMWidget):
         """Close the slide handle and release the widget.
 
         Idempotent — safe to call multiple times, or after a re-run cell
-        created a new widget while this one was still open. Blocks up to
-        10 s for an in-flight background render to finish, so the render
-        never touches a closed slide handle.
+        created a new widget while this one was still open. Every entry
+        point tears down through :meth:`_close_backend` (docs/DESIGN.md
+        §5.2), which waits for an in-flight background render.
         """
-        deadline = time.monotonic() + 10
-        while self._rendering_bg and time.monotonic() < deadline:
-            time.sleep(0.01)
         self._close_backend()
         super().close()
 
     def _close_backend(self) -> None:
-        """Release the OpenSlide handle (idempotent; also run from the
-        comm on_close handler when the frontend disposes the widget)."""
-        if self._closed:
-            return
-        self._closed = True
-        self.slide_open = False
+        """Release the OpenSlide handle — the single teardown path, shared by
+        ``close()`` and the comm ``on_close`` handler that frontend disposal
+        (clearing a cell output, re-running the cell) routes here.
+
+        Idempotent, and it refuses a render to start. It then waits for a
+        render loop that is already running to exit before freeing the
+        handle: ``openslide_close()`` requires that no other thread is using
+        the object, and closing under an in-flight ``read_region`` aborts
+        the kernel process (docs/DESIGN.md §5.2). A loop that outlasts
+        ``_TEARDOWN_TIMEOUT`` is reported and the handle is closed anyway —
+        a hung vendor read is the only way to reach it.
+        """
+        with self._render_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.slide_open = False
+            rendering = self._rendering_bg
+        if rendering and not self._render_done.wait(_TEARDOWN_TIMEOUT):
+            warnings.warn(
+                "islide: teardown: the render thread is still running after "
+                f"{_TEARDOWN_TIMEOUT}s; closing the slide handle anyway",
+                UserWarning,
+            )
         if self.backend is not None:
             self.backend.close()
             self.backend = None
@@ -570,10 +594,15 @@ class SlideViewer(widgets.DOMWidget):
 
     def _schedule_render(self) -> None:
         with self._render_lock:
+            if self._closed:
+                # Teardown has started and is waiting for this loop to be
+                # idle: a new render must not begin beside that handle.
+                return
             if self._rendering_bg:
                 self._render_dirty = True
                 return
             self._rendering_bg = True
+            self._render_done.clear()
         threading.Thread(
             target=self._render_loop, name="islide-render", daemon=True
         ).start()
@@ -601,10 +630,12 @@ class SlideViewer(widgets.DOMWidget):
                         # must not be lost — clearing the flag outside the
                         # lock would swallow that dirty render.
                         self._rendering_bg = False
+                        self._render_done.set()
                         return
         finally:
             with self._render_lock:
                 self._rendering_bg = False
+            self._render_done.set()
 
     # --------------------------------------------------------------- rendering
     def _render_once(self) -> ReadPlan | None:
@@ -627,6 +658,10 @@ class SlideViewer(widgets.DOMWidget):
         vp = self._vp_current
         plan = plan_viewport(self._meta, vp, self.tile_size)
         for chunk in plan.chunks:
+            if self._closed:
+                # Teardown began mid-render: stop before the next read
+                # rather than reading a handle that is being closed (§5.2).
+                return plan
             self._push_chunk(
                 plan,
                 chunk,
@@ -658,6 +693,10 @@ class SlideViewer(widgets.DOMWidget):
         crops) — identical for a tile across a render's pushes, so the
         view can reproject each tile under its own local transform.
         """
+        if self._closed:
+            # Only reachable past a teardown timeout (§5.2): a disposed
+            # widget gets a skipped chunk, not a push into a closing comm.
+            return
         geo: dict[str, list[int]] = {}
         urls: dict[str, str] = {}
         rx, ry = plan.read_origin

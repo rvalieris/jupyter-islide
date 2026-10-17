@@ -27,8 +27,12 @@ nb / lab / ×2 DPR) when a browser is available.
     TIFF was detected as 1 level (the generic-TIFF multi-resolution rules
     are stricter than "smaller sub-IFDs") — a real multi-resolution file is
     what the integration path exercises.
-- **`FakeSlide`** (`tests/util.py`): a metadata-only stub of the backend,
-  used by every unit test that needs a slide without libopenslide.
+- **`FakeSlide`** (`tests/test_widget_chunks.py`): a stub of the openslide OO
+  API over multi-level stripe images — `read_calls`, a `closed` flag, and
+  (for the teardown tests) outstanding-read tracking plus a gate that parks
+  a read in flight; used by every widget unit test that needs a slide
+  without libopenslide. `tests/util.py` holds the shared slide-download
+  helper and the tile-rect/screen-cover harness instead.
 - Level-selection math is additionally unit-tested against a fixed
   `SlideMeta` fixture in `tests/test_plan.py`.
 
@@ -50,7 +54,7 @@ nb / lab / ×2 DPR) when a browser is available.
 | `tests/test_widget_annotations.py` | annotation import: `set_annotations`/`clear_annotations` → `annotations` trait shape and level-0 values, replace semantics, import |
 | `tests/test_widget_polygon.py` | drawn polygons: `last_polygon` → a `Polygon` feature appended (fresh non-colliding id, empty `properties`); degenerate drafts (2 pts, collinear 3 pts, non-finite) dropped with a warning and no state change; successive saves get unique ids; `jpeg_quality` constructor arg (default 85, alters the `tiles` payload only) |
 | `tests/test_widget_edit.py` | annotation editing: the `annotation_edit` trait → `apply_edit` → updated `annotations` (unknown id → no push, `edit ignored` status; a degenerate/coincident/out-of-range vertex edit refused with the document unchanged); the `delete_annotation` / `set_annotation_label` / `set_annotation_color` / `set_annotation_vertex` / `add_annotation_vertex` API routes; `clear_annotations()` after |
-| `tests/test_widget_chunks.py` | smooth zoom: per-chunk push (a multi-chunk render assigns `tiles`/`tile_geo` once per chunk in the plan's viewport-center-first order — each push's `tile_geo` the chunk's absolute level-px crops, the union of the render's pushes the full viewport set, the traits holding the last chunk (last-event); a single-chunk render pushes exactly once; a superseded (dirty) render mid-pass leaves the final traits consistent with the latest viewport) |
+| `tests/test_widget_chunks.py` | smooth zoom: per-chunk push (a multi-chunk render assigns `tiles`/`tile_geo` once per chunk in the plan's viewport-center-first order — each push's `tile_geo` the chunk's absolute level-px crops, the union of the render's pushes the full viewport set, the traits holding the last chunk (last-event); a single-chunk render pushes exactly once; a superseded (dirty) render mid-pass leaves the final traits consistent with the latest viewport); teardown — one close path for `close()` and the comm `on_close`: disposal beside an in-flight read waits for the render loop instead of freeing the handle, a viewport after close starts no render, a render already running skips its remaining chunks, and a loop past the teardown timeout is warned about and closed anyway |
 | `tests/test_overlay.py` | the full-slide overlay: `set_overlay`/`clear_overlay`, the `overlay_img`/`overlay_alpha` traits, aspect checking, the `transparent` key |
 | `tests/test_integration.py` | real open/read against the test slide (needs openslide + the downloaded slide; skips otherwise) |
 | `tests/test_rerun.py` | notebook re-run / display-timing regression: a view that attaches and bumps `resync` right after construction, and re-running the construction cell (a new widget while the previous one may still be open); both keep serving tiles when the user zooms |

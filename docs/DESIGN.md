@@ -200,11 +200,19 @@ evicted tile costs one 256-px read, not a block. Consequences:
 - **Slide handle**: `OpenSlide` objects are opened synchronously in the
   widget constructor (opening large SVS files can take seconds; the
   constructor blocks until open, and raises on failure) and kept open while
-  the viewer is live; released by `close()` (which waits for an in-flight
-  background render) and, when the frontend disposes the widget without
-  `close()` being called, by the comm `on_close` handler registered in the
-  constructor (ipywidgets 8 has no Python-side dispose hook, and a
-  kernel-side `close()` does not fire the comm's `on_close`).
+  the viewer is live. Both disposal paths — `close()`, and the comm
+  `on_close` handler registered in the constructor for frontend disposal
+  without `close()` (ipywidgets 8 has no Python-side dispose hook, and a
+  kernel-side `close()` does not fire the comm's `on_close`) — go through
+  one teardown path: it sets the closed flag (so no render can start),
+  waits for a render loop already running to exit, then frees the handle.
+  The wait is required, not polite: `openslide_close()` states no other
+  thread may be using the object, and closing beside an in-flight
+  `read_region` aborts the kernel process (`read_region` is a ctypes call
+  that releases the GIL, so the two really do run beside each other). A
+  render that outlasts the 10 s wait is reported and the handle is closed
+  anyway; a render already past its entry check skips its remaining chunks
+  rather than starting a new read.
 - **Minimap image** and slide **metadata** computed once at open.
 
 ### 5.3 Encoding choice
@@ -617,7 +625,7 @@ v.add_annotation_vertex("a3", 1, 50.0, 80.0)     # insert at flat segment 1
 # (x, y level-0 px; flat indices = canonical position/segment order,
 #  docs/annotations.md)
 
-v.close()                      # joins open thread, closes the slide handle
+v.close()                      # waits for the render loop, closes the slide handle
 ```
 
 Widget identity (must match the JS module, §6.1.1):
