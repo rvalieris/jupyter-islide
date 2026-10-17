@@ -45,6 +45,7 @@ nb / lab / ×2 DPR) when a browser is available.
 | `tests/test_annotations.py` | the pure annotation document: `parse_annotations` (all six source geometry types; `MultiPoint`/`MultiPolygon` kept whole; `GeometryCollection` expanded; `properties` pass-through with null-value drop; ids unique — collision `ValueError`; degenerate drops with warnings; bare-geometry + single-`Feature` inputs; strict error paths) and `apply_edit` (all five ops, per geometry type; the flat position/segment indices; idempotence; unknown id → `None`; bad index / non-finite / coincident / degenerate → `ValueError`; input non-mutation) |
 | `tests/test_backend.py` | the backend seam + the `slide=` constructor argument |
 | `tests/test_versions.py` | the version guard: `pyproject.toml` (the source of truth) must match `frontend/package.json` and `frontend/package-lock.json`, and `frontend/sync-version.mjs` must replace stale versions |
+| `tests/test_wire_constants.py` | the numeric half of the wire contract, read out of the frontend source: `MAX_ZOOM` and `MIN_ZOOM_PAD` against `frontend/view.js`, the kernel's zoom floor against the JS pad, the decoded-tile cache cap across its four declarations (the `image_cache_max` trait, `TileCache`'s default, `view.js`, `defaults.js`), the `canvas_h` default, and `canvas_w` staying Python-only |
 
 ## Widget tests (headless, no JS view)
 
@@ -81,3 +82,10 @@ the package version is asserted synced across
 `pyproject.toml` / `frontend/package.json` / `frontend/package-lock.json`
 (`tests/test_versions.py`) — so the comm contract and the release versions
 can't drift.
+
+The *numbers* the same contract carries are guarded the same way: the zoom
+bounds (`islide/widget.MAX_ZOOM` / `MIN_ZOOM_PAD` against `frontend/view.js`),
+the decoded-tile cache cap (`image_cache_max`, `TileCache`, `view.js`,
+`defaults.js`), and the `canvas_h` default — `tests/test_wire_constants.py`.
+The JS bounds decide when the view stops sending viewports, so without this a
+one-sided change would show up as the wheel stopping working at the extremes.

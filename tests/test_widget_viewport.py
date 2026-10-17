@@ -19,6 +19,7 @@ from PIL import Image
 
 from islide import SlideViewer
 from islide.viewport import SlideMeta, fit_zoom
+from islide.widget import MIN_ZOOM_PAD
 
 
 META = SlideMeta(
@@ -71,8 +72,8 @@ def wire(viewer, **over) -> dict:
 
 
 def floor_of(canvas_w: int = 960, canvas_h: int = 540) -> float:
-    """The zoom floor: fit zoom / 4 (the JS ``MIN_ZOOM_PAD``)."""
-    return fit_zoom(META, canvas_w, canvas_h) / 4.0
+    """The zoom floor: fit zoom / MIN_ZOOM_PAD (the pad shared with the JS view)."""
+    return fit_zoom(META, canvas_w, canvas_h) / MIN_ZOOM_PAD
 
 
 def wait_idle(viewer, timeout: float = 10.0) -> None:

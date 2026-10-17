@@ -32,8 +32,10 @@ import './style/index.css';
 
 const SYNC_DEBOUNCE_MS = 120;
 const DEFAULT_CACHED_IMAGES = 1000; // fallback when the trait is absent
-const MIN_ZOOM_PAD = 4; // min zoom = fit / 4 (matches the Python side)
-const MAX_ZOOM = 16;
+const MIN_ZOOM_PAD = 4; // min zoom = fit / pad (islide.widget.MIN_ZOOM_PAD)
+const MAX_ZOOM = 16; // max zoom (islide.widget.MAX_ZOOM)
+// All three are the numeric half of the wire contract, guarded against the
+// Python side by tests/test_wire_constants.py (docs/DESIGN.md §6.2, §7).
 
 export class SlideView extends DOMWidgetView {
   render() {

@@ -44,6 +44,13 @@ _EMPTY_ANNOTATION_DOC = {"type": "FeatureCollection", "features": []}
 # deliberately not user-settable — the cell's real width is measured by
 # the view, never chosen by the user.
 DEFAULT_PLANNING_WIDTH = 960
+# Wire-boundary zoom bounds. The JS view declares the same pair
+# (``MAX_ZOOM`` / ``MIN_ZOOM_PAD`` in ``frontend/view.js``) and clamps its own
+# transform to them, so the two sides must agree or the view silently stops
+# sending viewports at the extremes (docs/DESIGN.md §6.2).
+# ``tests/test_wire_constants.py`` asserts the pair against the JS constants.
+MAX_ZOOM = 16.0  # ceiling, in screen px per level-0 px
+MIN_ZOOM_PAD = 4  # floor: the canvas' fit zoom divided by this pad
 
 # Overlay aspect tolerance: a full-slide image (e.g. a get_thumbnail
 # output) matches the slide's aspect ratio up to integer rounding.
@@ -353,7 +360,7 @@ class SlideViewer(widgets.DOMWidget):
         self.tile_size = int(tile_size)
         self.cache = TileCache(int(image_cache_max))
         self._meta: SlideMeta | None = None
-        self._max_zoom = 16.0
+        self._max_zoom = MAX_ZOOM
         self._render_lock = threading.Lock()
         self._rendering_bg = False
         # Set whenever no render loop is running. The single teardown path
@@ -474,15 +481,15 @@ class SlideViewer(widgets.DOMWidget):
         return (DEFAULT_PLANNING_WIDTH, int(self.canvas_h))
 
     def _zoom_floor(self, canvas_w: int, canvas_h: int) -> float:
-        """Zoom floor of a canvas: its fit zoom divided by 4 (the JS
-        ``MIN_ZOOM_PAD``). The ceiling is ``_max_zoom``."""
+        """Zoom floor of a canvas: its fit zoom divided by ``MIN_ZOOM_PAD`` (the
+        pad the JS view uses too). The ceiling is ``_max_zoom``."""
         assert self._meta is not None
-        return fit_zoom(self._meta, canvas_w, canvas_h) / 4.0
+        return fit_zoom(self._meta, canvas_w, canvas_h) / MIN_ZOOM_PAD
 
     @property
     def _min_zoom(self) -> float:
         """Zoom floor: the fit zoom of the current planning canvas
-        divided by 4 (width: ``canvas_w`` once attached, the headless
+        divided by ``MIN_ZOOM_PAD`` (width: ``canvas_w`` once attached, the headless
         default otherwise; height: the ``canvas_h`` trait). Matches the
         JS ``_zoomBounds`` exactly."""
         vp = self._vp_current
